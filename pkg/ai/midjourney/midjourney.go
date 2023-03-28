@@ -37,7 +37,7 @@ type Client struct {
 	cmd       *discordgo.ApplicationCommand
 }
 
-func New(client *discord.Client, channelID string, debug bool) (ai.Client, error) {
+func New(client *discord.Client, channelID string, guildID string, debug bool) (ai.Client, error) {
 	node, err := snowflake.NewNode(0)
 	if err != nil {
 		return nil, fmt.Errorf("midjourney: couldn't create snowflake node")
@@ -50,16 +50,16 @@ func New(client *discord.Client, channelID string, debug bool) (ai.Client, error
 		}
 	}
 
-	guildID := ""
-	if split := strings.SplitN(channelID, "/", 2); len(split) == 2 {
-		guildID = split[0]
-		channelID = split[1]
-	}
-	if guildID != "" {
-		client.Referer = fmt.Sprintf("channels/%s/%s", guildID, channelID)
-	} else {
-		client.Referer = fmt.Sprintf("channels/@me/%s", channelID)
-	}
+	//guildID := ""
+	//if split := strings.SplitN(channelID, "/", 2); len(split) == 2 {
+	//	guildID = split[0]
+	//	channelID = split[1]
+	//}
+	//if guildID != "" {
+	//	client.Referer = fmt.Sprintf("channels/%s/%s", guildID, channelID)
+	//} else {
+	//	client.Referer = fmt.Sprintf("channels/@me/%s", channelID)
+	//}
 
 	c := &Client{
 		c:         client,

@@ -56,6 +56,7 @@ type Config struct {
 	Download    bool          `yaml:"download"`
 	Thumbnail   bool          `yaml:"thumbnail"`
 	Channel     string        `yaml:"channel"`
+	GroupID     string        `yaml:"groupID"`
 	Concurrency int           `yaml:"concurrency"`
 	Wait        time.Duration `yaml:"wait"`
 	SessionFile string        `yaml:"session"`
@@ -120,7 +121,7 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 	}
 
 	// Check ai bot
-	var newCli func(*discord.Client, string, bool) (ai.Client, error)
+	var newCli func(*discord.Client, string, string, bool) (ai.Client, error)
 	var cli ai.Client
 	switch strings.ToLower(cfg.Bot) {
 	case "bluewillow":
@@ -266,7 +267,7 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 	}
 
 	// Start ai client
-	cli, err = newCli(client, cfg.Channel, cfg.Debug)
+	cli, err = newCli(client, cfg.Channel, cfg.GroupID, cfg.Debug)
 	if err != nil {
 		return fmt.Errorf("couldn't create %s client: %w", cfg.Bot, err)
 	}
