@@ -1,4 +1,4 @@
-module github.com/igolaizola/bulkai
+module github.com/ZYKJShadow/bulkai
 
 go 1.20
 

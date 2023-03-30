@@ -2,12 +2,9 @@ package bulkai
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/igolaizola/bulkai/pkg/ai"
-	"github.com/igolaizola/bulkai/pkg/ai/bluewillow"
-	"github.com/igolaizola/bulkai/pkg/ai/midjourney"
-	"github.com/igolaizola/bulkai/pkg/discord"
-	"github.com/igolaizola/bulkai/pkg/http"
-	"github.com/igolaizola/bulkai/pkg/img"
+	"github.com/ZYKJShadow/bulkai/pkg/ai"
+	"github.com/ZYKJShadow/bulkai/pkg/ai/bluewillow"
+	"github.com/ZYKJShadow/bulkai/pkg/ai/midjourney"
+	"github.com/ZYKJShadow/bulkai/pkg/discord"
+	"github.com/ZYKJShadow/bulkai/pkg/http"
+	"github.com/ZYKJShadow/bulkai/pkg/img"
 	"gopkg.in/yaml.v2"
 )
 
@@ -56,7 +53,7 @@ type Config struct {
 	Download    bool          `yaml:"download"`
 	Thumbnail   bool          `yaml:"thumbnail"`
 	Channel     string        `yaml:"channel"`
-	GroupID     string        `yaml:"groupID"`
+	GuildID     string        `yaml:"groupID"`
 	Concurrency int           `yaml:"concurrency"`
 	Wait        time.Duration `yaml:"wait"`
 	SessionFile string        `yaml:"session"`
@@ -76,6 +73,7 @@ type Session struct {
 type Status struct {
 	Percentage float32
 	Estimated  time.Duration
+	Err        error
 }
 
 type Option func(*option)
@@ -90,8 +88,7 @@ func WithOnUpdate(onUpdate func(Status)) Option {
 	}
 }
 
-// Generate launches multiple ai generations.
-func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
+func CheckSessionInfo(cfg *Config) error {
 	if cfg.Session.Token == "" {
 		return errors.New("missing token")
 	}
@@ -113,6 +110,16 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 	if cfg.Session.Language == "" {
 		return errors.New("missing language")
 	}
+	return nil
+}
+
+// Generate launches multiple ai generations.
+func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
+
+	err := CheckSessionInfo(cfg)
+	if err != nil {
+		return err
+	}
 
 	// Load options
 	o := &option{}
@@ -120,7 +127,6 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 		opt(o)
 	}
 
-	// Check ai bot
 	var newCli func(*discord.Client, string, string, bool) (ai.Client, error)
 	var cli ai.Client
 	switch strings.ToLower(cfg.Bot) {
@@ -139,36 +145,9 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 	}
 	var album *Album
 	albumDir := fmt.Sprintf("%s/%s", cfg.Output, albumID)
-	imgDir := fmt.Sprintf("%s/images", albumDir)
+	imgDir := albumDir
 
 	var prompts []string
-
-	// Check if the album data file exists
-	dataFile := fmt.Sprintf("%s/%s/data.json", cfg.Output, albumID)
-	_, err := os.Stat(dataFile)
-	switch {
-	case os.IsNotExist(err):
-		// Album doesn't exist, create it later
-	case err != nil:
-		return fmt.Errorf("couldn't stat album data file: %w", err)
-	default:
-		// Album already exists, resume it
-		data, err := os.ReadFile(dataFile)
-		if err != nil {
-			return fmt.Errorf("couldn't read album data file: %w", err)
-		}
-		albumCandidate := &Album{}
-		if err := json.Unmarshal(data, albumCandidate); err != nil {
-			return fmt.Errorf("couldn't unmarshal album data file: %w", err)
-		}
-		if albumCandidate.Status == "finished" {
-			log.Println("album already finished:", albumDir)
-			return nil
-		}
-		album = albumCandidate
-		prompts = album.Prompts
-		log.Println("album resumed:", albumDir)
-	}
 
 	if len(prompts) == 0 {
 		if len(cfg.Prompts) == 0 {
@@ -266,8 +245,7 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 		return fmt.Errorf("couldn't start discord client: %w", err)
 	}
 
-	// Start ai client
-	cli, err = newCli(client, cfg.Channel, cfg.GroupID, cfg.Debug)
+	cli, err = newCli(client, cfg.Channel, cfg.GuildID, cfg.Debug)
 	if err != nil {
 		return fmt.Errorf("couldn't create %s client: %w", cfg.Bot, err)
 	}
@@ -292,19 +270,10 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 			if err := os.MkdirAll(imgDir, 0755); err != nil {
 				return fmt.Errorf("couldn't create album images directory: %w", err)
 			}
-			if cfg.Thumbnail {
-				if err := os.MkdirAll(fmt.Sprintf("%s/_thumbnails", imgDir), 0755); err != nil {
-					return fmt.Errorf("couldn't create album images directory: %w", err)
-				}
-			}
-		}
-		if err := SaveAlbum(albumDir, album, cfg.Thumbnail); err != nil {
-			return fmt.Errorf("couldn't save album: %w", err)
 		}
 		log.Println("album created:", albumDir)
 	}
 
-	// Launch ai bulk operation
 	imageChan := ai.Bulk(ctx, cli, prompts, album.Finished, cfg.Variation, cfg.Upscale, cfg.Concurrency, cfg.Wait)
 	var exit bool
 	for !exit {
@@ -325,9 +294,7 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 				lck.Lock()
 				album.UpdatedAt = time.Now().UTC()
 				images := toImages(ctx, client, image, imgDir, cfg.Download, cfg.Upscale, cfg.Thumbnail)
-				if err != nil {
-					log.Println(err)
-				} else {
+				if len(images) > 0 {
 					album.Images = append(album.Images, images...)
 					if image.IsLast {
 						album.Finished = append(album.Finished, image.PromptIndex)
@@ -335,6 +302,12 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 				}
 				lck.Unlock()
 			}
+			//default:
+			//	err = errors.New("今日AI绘图已超出使用上限，请稍后再试")
+			//	o.onUpdate(Status{
+			//		Err: err,
+			//	})
+			//	return err
 		}
 		lck.Lock()
 		album.UpdatedAt = time.Now().UTC()
@@ -351,12 +324,7 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 		}
 		album.Percentage = percentage
 		album.Status = status
-
-		err := SaveAlbum(albumDir, album, cfg.Thumbnail)
 		lck.Unlock()
-		if err != nil {
-			return fmt.Errorf("couldn't generate html: %w", err)
-		}
 	}
 	log.Printf("album %s %s\n", albumDir, album.Status)
 
@@ -420,134 +388,11 @@ func toImages(ctx context.Context, client *discord.Client, image *ai.Image, imgD
 		for _, imgOutput := range imgOutputs {
 			base := filepath.Base(imgOutput)
 			base = base[:len(base)-len(filepath.Ext(base))]
-			previewOutput := fmt.Sprintf("%s/_thumbnails/%s.jpg", imgDir, base)
+			previewOutput := fmt.Sprintf("%s/%s.jpg", imgDir, base)
 			if err := img.Resize(4, imgOutput, previewOutput); err != nil {
 				log.Println(fmt.Errorf("❌ couldn't preview `%s`: %w", imgOutput, err))
 			}
 		}
 	}
 	return images
-}
-
-var albumHTML = `<html>
-<head>
-<style>
-div.gallery {
-	margin: 5px;
-	border: 1px solid #ccc;
-	float: left;
-	width: 128px;
-}
-
-div.gallery:hover {
-	border: 1px solid #777;
-}
-
-div.gallery img {
-	width: 100%;
-	height: auto;
-}
-
-div.gallery input {
-	margin-top: 5px;
-	width: 100%;
-}
-</style>
-</head>
-<body>
-
-<h1>{{ .Title }}</h1>
-<p>{{ .Status }}, elapsed: {{ .Elapsed }}</p>
-{{range  .Images }}
-<div class="gallery">
-  <a target="_blank" href="{{ .URL }}">
-    <img src="{{ .Source }}">
-  </a>
-  <input type="text" value="{{ .Prompt }}">
-</div>
-{{end}}
-
-</body>
-</html>
-`
-
-type htmlData struct {
-	Title   string
-	Status  string
-	Images  []*htmlImage
-	Elapsed string
-}
-
-type htmlImage struct {
-	URL    string
-	Source string
-	Prompt string
-}
-
-func SaveAlbum(dir string, a *Album, thumbnail bool) error {
-	// Sort images
-	images := a.Images
-	sort.Slice(images, func(i, j int) bool {
-		return images[i].Prompt < images[j].Prompt || (images[i].Prompt == images[j].Prompt && images[i].URL < images[j].URL)
-	})
-
-	// Save json
-	js, err := json.MarshalIndent(a, "", "  ")
-	if err != nil {
-		return fmt.Errorf("couldn't marshal album: %w", err)
-	}
-	if err := os.WriteFile(fmt.Sprintf("%s/data.json", dir), js, 0644); err != nil {
-		return fmt.Errorf("couldn't write album: %w", err)
-	}
-
-	var local htmlData
-	local.Title = fmt.Sprintf("Album %s", a.ID)
-	local.Status = fmt.Sprintf("%s %d%% %s", a.Status, int(a.Percentage), a.UpdatedAt.Format("2006-01-02 15:04:05"))
-	local.Elapsed = a.UpdatedAt.Sub(a.CreatedAt).String()
-	external := local
-	for _, img := range a.Images {
-		prompt := strings.ReplaceAll(img.Prompt, "\"", "&quot;")
-		external.Images = append(external.Images, &htmlImage{
-			URL:    img.URL,
-			Source: img.URL,
-			Prompt: prompt,
-		})
-		url := fmt.Sprintf("images/%s", img.File)
-		src := url
-		if thumbnail {
-			base := filepath.Base(img.File)
-			base = base[:len(base)-len(filepath.Ext(base))]
-			src = fmt.Sprintf("images/_thumbnails/%s.jpg", base)
-		}
-		local.Images = append(local.Images, &htmlImage{
-			URL:    url,
-			Source: src,
-			Prompt: prompt,
-		})
-	}
-
-	tmpl, err := template.New("album").Parse(albumHTML)
-	if err != nil {
-		return fmt.Errorf("couldn't parse template: %w", err)
-	}
-
-	// Write HTML with extarnal URLs
-	buf := &bytes.Buffer{}
-	if err := tmpl.Execute(buf, local); err != nil {
-		return fmt.Errorf("couldn't execute template: %w", err)
-	}
-	if err := os.WriteFile(fmt.Sprintf("%s/index.html", dir), buf.Bytes(), 0644); err != nil {
-		return fmt.Errorf("couldn't write index.html: %w", err)
-	}
-
-	// Write HTML with local URLs
-	buf = &bytes.Buffer{}
-	if err := tmpl.Execute(buf, external); err != nil {
-		return fmt.Errorf("couldn't execute template: %w", err)
-	}
-	if err := os.WriteFile(fmt.Sprintf("%s/remote.html", dir), buf.Bytes(), 0644); err != nil {
-		return fmt.Errorf("couldn't write remote.html: %w", err)
-	}
-
-	return nil
 }

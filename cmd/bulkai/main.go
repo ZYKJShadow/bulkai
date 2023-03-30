@@ -10,8 +10,8 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/igolaizola/bulkai"
-	"github.com/igolaizola/bulkai/pkg/session"
+	"github.com/ZYKJShadow/bulkai"
+	"github.com/ZYKJShadow/bulkai/pkg/session"
 	"github.com/peterbourgon/ff/v3"
 	"github.com/peterbourgon/ff/v3/ffcli"
 	"github.com/peterbourgon/ff/v3/ffyaml"

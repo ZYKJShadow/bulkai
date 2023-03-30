@@ -92,7 +92,7 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 				preview, err := imagine(cli, ctx, e.prompt)
 				if err != nil {
 					log.Println(fmt.Errorf("❌ couldn't imagine %s %w", e.prompt, err))
-					continue
+					break
 				}
 
 				if !upscaleEnabled {

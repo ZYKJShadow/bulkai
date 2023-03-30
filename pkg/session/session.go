@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/ZYKJShadow/bulkai"
+	"github.com/ZYKJShadow/bulkai/pkg/scrapfly"
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
-	"github.com/igolaizola/bulkai"
-	"github.com/igolaizola/bulkai/pkg/scrapfly"
 	"gopkg.in/yaml.v3"
 )
 

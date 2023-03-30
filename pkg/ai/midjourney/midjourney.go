@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZYKJShadow/bulkai/pkg/ai"
+	"github.com/ZYKJShadow/bulkai/pkg/discord"
 	"github.com/bwmarrin/discordgo"
 	"github.com/bwmarrin/snowflake"
-	"github.com/igolaizola/bulkai/pkg/ai"
-	"github.com/igolaizola/bulkai/pkg/discord"
 )
 
 const (
