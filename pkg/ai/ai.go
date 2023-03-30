@@ -63,7 +63,7 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 		})
 	}
 
-	out := make(chan (*Image))
+	out := make(chan *Image)
 	wg := sync.WaitGroup{}
 	for _, entries := range chunks {
 		entries := entries
@@ -260,7 +260,7 @@ func variation(cli Client, ctx context.Context, preview *Preview, index int) (*P
 	return variationPreview, nil
 }
 
-const maxAttempts = 5
+const maxAttempts = 1
 
 func retry(ctx context.Context, fn func(context.Context) error) error {
 	attempts := 0
