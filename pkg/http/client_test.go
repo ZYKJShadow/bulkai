@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	http "github.com/Danny-Dasilva/fhttp"
-	"github.com/igolaizola/bulkai/pkg/scrapfly"
+	"github.com/ZYKJShadow/bulkai/pkg/scrapfly"
 )
 
 func TestBrowser(t *testing.T) {
