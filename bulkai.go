@@ -74,6 +74,7 @@ type Status struct {
 	Percentage float32
 	Estimated  time.Duration
 	Err        error
+	StatusInfo string
 }
 
 type Option func(*option)
@@ -320,6 +321,7 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 				o.onUpdate(Status{
 					Percentage: percentage,
 					Estimated:  estimated,
+					StatusInfo: status,
 				})
 			}
 		}
@@ -327,8 +329,8 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 		album.Status = status
 		lck.Unlock()
 	}
-	log.Printf("album %s %s\n", albumDir, album.Status)
 
+	log.Printf("album %s %s\n", albumDir, album.Status)
 	return nil
 }
 
