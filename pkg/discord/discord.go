@@ -52,6 +52,7 @@ type Config struct {
 	HTTPClient      *http.Client
 	Dialer          func(ctx context.Context, network, addr string) (net.Conn, error)
 	Debug           bool
+	Proxy           string
 }
 
 type SuperProperties struct {
@@ -112,7 +113,7 @@ func New(ctx context.Context, cfg *Config) (*Client, error) {
 		return nil, fmt.Errorf("discord: couldn't decode user id %s: %w", string(split[0]), err)
 	}
 
-	session, err := newSession(cfg.Dialer, cfg.Token, cfg.UserAgent)
+	session, err := newSession(cfg.Dialer, cfg.Token, cfg.UserAgent, cfg.Proxy)
 	if err != nil {
 		return nil, fmt.Errorf("discord: couldn't create session: %w", err)
 	}

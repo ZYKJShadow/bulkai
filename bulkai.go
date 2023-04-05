@@ -235,6 +235,7 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 		UserAgent:       cfg.Session.UserAgent,
 		HTTPClient:      httpClient,
 		Debug:           cfg.Debug,
+		Proxy:           cfg.Proxy,
 	})
 	if err != nil {
 		return fmt.Errorf("couldn't create discord client: %w", err)

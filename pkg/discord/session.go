@@ -6,18 +6,23 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/gorilla/websocket"
 )
 
-func newSession(dialer func(ctx context.Context, network, addr string) (net.Conn, error), token, userAgent string) (*discordgo.Session, error) {
+func newSession(dialer func(ctx context.Context, network, addr string) (net.Conn, error), token, userAgent, proxy string) (*discordgo.Session, error) {
 	s, err := discordgo.New(token)
 	if err != nil {
 		return nil, err
 	}
+	u, err := url.Parse(proxy)
+	if err != nil {
+		return nil, err
+	}
 	s.Dialer = &websocket.Dialer{
-		Proxy: http.ProxyFromEnvironment,
+		Proxy: http.ProxyURL(u),
 	}
 	if dialer != nil {
 		s.Dialer.NetDialContext = dialer
