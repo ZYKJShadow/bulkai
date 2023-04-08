@@ -3,6 +3,7 @@ package midjourney
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -50,17 +51,6 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 		}
 	}
 
-	//guildID := ""
-	//if split := strings.SplitN(channelID, "/", 2); len(split) == 2 {
-	//	guildID = split[0]
-	//	channelID = split[1]
-	//}
-	//if guildID != "" {
-	//	client.Referer = fmt.Sprintf("channels/%s/%s", guildID, channelID)
-	//} else {
-	//	client.Referer = fmt.Sprintf("channels/@me/%s", channelID)
-	//}
-
 	c := &Client{
 		c:         client,
 		debug:     debug,
@@ -71,12 +61,14 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 		guildID:   guildID,
 	}
 
-	c.c.OnEvent(func(e *discordgo.Event) {
+	c.c.OnEvent(func(e *discordgo.Event) (err error) {
 		switch e.Type {
 		case discord.MessageCreateEvent, discord.MessageUpdateEvent:
+
 			var msg discord.Message
-			if err := json.Unmarshal(e.RawData, &msg); err != nil {
+			if err = json.Unmarshal(e.RawData, &msg); err != nil {
 				log.Println("midjourney: couldn't unmarshal message: %w", err)
+				return
 			}
 			c.debugLog(e.Type, e.RawData)
 
@@ -169,6 +161,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				return
 			}
 		}
+		return
 	})
 	return c, nil
 }
@@ -260,6 +253,9 @@ func (c *Client) receiveMessage(parent context.Context, key search, fn func() er
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case msg := <-msgChan:
+		if err := c.checkError(msg); err != nil {
+			return nil, err
+		}
 		return msg, nil
 	}
 }
@@ -326,6 +322,7 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error) {
+
 	nonce := c.node.Generate().String()
 	imagine := &discord.InteractionCommand{
 		Type:          2,
@@ -400,6 +397,13 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 		MessageID:      preview.ID,
 		ImageIDs:       imageIDs,
 	}, nil
+}
+
+func (c *Client) checkError(msg *discord.Message) error {
+	if len(msg.Embeds) > 0 && (strings.Contains(msg.Embeds[0].Description, "been blocked") || strings.Contains(msg.Embeds[0].Description, "ban")) {
+		return errors.New(msg.Embeds[0].Description)
+	}
+	return nil
 }
 
 func (c *Client) Upscale(ctx context.Context, preview *ai.Preview, index int) (string, error) {

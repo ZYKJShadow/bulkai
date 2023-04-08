@@ -34,7 +34,7 @@ type Client struct {
 	userAgent       string
 	client          *http.Client
 	session         *discordgo.Session
-	callbacks       []func(*discordgo.Event)
+	callbacks       []func(*discordgo.Event) error
 	dm              map[string]string
 	debug           bool
 
@@ -126,7 +126,7 @@ func New(ctx context.Context, cfg *Config) (*Client, error) {
 		userAgent:       cfg.UserAgent,
 		Referer:         cfg.Referer,
 		client:          cfg.HTTPClient,
-		callbacks:       []func(*discordgo.Event){},
+		callbacks:       []func(*discordgo.Event) error{},
 		session:         session,
 		dm:              make(map[string]string),
 		debug:           cfg.Debug,
@@ -141,7 +141,7 @@ func (c *Client) Session() string {
 	return c.session.State.SessionID
 }
 
-func (c *Client) OnEvent(callback func(*discordgo.Event)) {
+func (c *Client) OnEvent(callback func(*discordgo.Event) error) {
 	c.callbackLck.Lock()
 	defer c.callbackLck.Unlock()
 	c.callbacks = append(c.callbacks, callback)

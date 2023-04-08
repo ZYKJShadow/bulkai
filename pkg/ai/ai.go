@@ -26,6 +26,7 @@ type Client interface {
 	Imagine(ctx context.Context, prompt string) (*Preview, error)
 	Upscale(ctx context.Context, preview *Preview, index int) (string, error)
 	Variation(ctx context.Context, preview *Preview, index int) (*Preview, error)
+
 	Concurrency() int
 }
 
@@ -72,12 +73,15 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 		}
 		wg.Add(1)
 		go func() {
+
 			defer wg.Done()
 			for k, e := range entries {
+
 				currWait := wait
 				if k == 0 {
 					currWait = 1 * time.Second
 				}
+
 				if currWait > 0 {
 					// Wait before sending next request
 					// use a random value between 85% and 115% of the wait time
@@ -213,6 +217,10 @@ func fixString(str string) string {
 		str = str[:50]
 	}
 	return str
+}
+
+func Mistake(cli Client, ctx context.Context, prompt string) {
+
 }
 
 func imagine(cli Client, ctx context.Context, prompt string) (*Preview, error) {
