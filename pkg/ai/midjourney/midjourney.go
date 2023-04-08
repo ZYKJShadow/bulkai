@@ -36,6 +36,7 @@ type Client struct {
 	channelID string
 	guildID   string
 	cmd       *discordgo.ApplicationCommand
+	errorChan chan error
 }
 
 func New(client *discord.Client, channelID string, guildID string, debug bool) (ai.Client, error) {
@@ -59,6 +60,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 		cache:     make(map[string]struct{}),
 		channelID: channelID,
 		guildID:   guildID,
+		errorChan: make(chan error, 1),
 	}
 
 	c.c.OnEvent(func(e *discordgo.Event) (err error) {
@@ -71,6 +73,11 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				return
 			}
 			c.debugLog(e.Type, e.RawData)
+
+			if err = c.checkError(&msg); err != nil {
+				c.errorChan <- err
+				return
+			}
 
 			var key search
 			var cacheID string
@@ -319,6 +326,10 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 	c.cmd = cmd
 	return nil
+}
+
+func (c *Client) ReadErrorChan() chan error {
+	return c.errorChan
 }
 
 func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error) {

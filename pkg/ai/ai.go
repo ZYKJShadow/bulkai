@@ -26,7 +26,7 @@ type Client interface {
 	Imagine(ctx context.Context, prompt string) (*Preview, error)
 	Upscale(ctx context.Context, preview *Preview, index int) (string, error)
 	Variation(ctx context.Context, preview *Preview, index int) (*Preview, error)
-
+	ReadErrorChan() chan error
 	Concurrency() int
 }
 

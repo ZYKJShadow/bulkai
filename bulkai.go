@@ -277,6 +277,7 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 	}
 
 	imageChan := ai.Bulk(ctx, cli, prompts, album.Finished, cfg.Variation, cfg.Upscale, cfg.Concurrency, cfg.Wait)
+	errorChan := cli.ReadErrorChan()
 	var exit bool
 	for !exit {
 		var status string
@@ -289,8 +290,11 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 				status = "finished"
 				if album.Percentage < 100 {
 					status = "partially finished"
+					o.onUpdate(Status{
+						StatusInfo: status,
+					})
 				}
-				exit = true
+				break
 			} else {
 				status = "running"
 				lck.Lock()
@@ -303,6 +307,16 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 					}
 				}
 				lck.Unlock()
+			}
+		case err, ok := <-errorChan:
+			if !ok {
+				status = "cancelled"
+				exit = true
+			} else if err != nil {
+				o.onUpdate(Status{
+					Err: err,
+				})
+				break
 			}
 			//default:
 			//	err = errors.New("今日AI绘图已超出使用上限，请稍后再试")
@@ -329,7 +343,7 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 		album.Status = status
 		lck.Unlock()
 	}
-
+	close(errorChan)
 	log.Printf("album %s %s\n", albumDir, album.Status)
 	return nil
 }
