@@ -202,6 +202,8 @@ func (c *Client) debugLog(t string, v interface{}) {
 
 func parseContent(content string) (string, string, bool) {
 
+	content = strings.ReplaceAll(content, "\\u003e", "")
+
 	// 定义一个正则表达式，用于匹配网址
 	urlPattern := `(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s` + "`" + `!()\[\]{};:'".,<>?«»“”‘’]))`
 	// 编译正则表达式
