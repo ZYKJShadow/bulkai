@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,15 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 
 	c.c.OnEvent(func(e *discordgo.Event) (err error) {
 		switch e.Type {
+
+		case discord.InteractionCreateEvent, discord.InteractionSuccessEvent:
+			var msg discord.Message
+			if err = json.Unmarshal(e.RawData, &msg); err != nil {
+				log.Println("midjourney: couldn't unmarshal message: %w", err)
+				return
+			}
+			c.debugLog(e.Type, msg)
+
 		case discord.MessageCreateEvent, discord.MessageUpdateEvent:
 
 			var msg discord.Message
@@ -84,6 +94,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 
 			switch {
 			case len(msg.Attachments) > 0:
+
 				// Ignore webp attachments as they are not fully finished images
 				if msg.Attachments[0].ContentType == "image/webp" {
 					return
@@ -190,6 +201,14 @@ func (c *Client) debugLog(t string, v interface{}) {
 }
 
 func parseContent(content string) (string, string, bool) {
+
+	// 定义一个正则表达式，用于匹配网址
+	urlPattern := `(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s` + "`" + `!()\[\]{};:'".,<>?«»“”‘’]))`
+	// 编译正则表达式
+	re := regexp.MustCompile(urlPattern)
+	// 使用正则表达式替换网址为 <LINK>
+	content = re.ReplaceAllString(content, "<LINK>")
+
 	// Search prompt
 	split := strings.SplitN(content, "**", 3)
 	if len(split) != 3 {
