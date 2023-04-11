@@ -328,10 +328,6 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) ReadErrorChan() chan error {
-	return nil
-}
-
 func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error) {
 	nonce := c.node.Generate().String()
 	imagine := &discord.InteractionCommand{
