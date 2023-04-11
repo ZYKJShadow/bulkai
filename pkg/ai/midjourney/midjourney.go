@@ -38,6 +38,7 @@ type Client struct {
 	guildID   string
 	cmd       *discordgo.ApplicationCommand
 	errorChan chan error
+	validator Validator
 }
 
 func New(client *discord.Client, channelID string, guildID string, debug bool) (ai.Client, error) {
@@ -112,7 +113,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				}
 
 				// Parse prompt
-				prompt, rest, ok := ParseContent(msg.Content)
+				prompt, rest, ok := parseContent(msg.Content)
 				if !ok {
 					return
 				}
@@ -146,7 +147,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				}
 
 				// Parse prompt
-				if _, _, ok := ParseContent(msg.Content); !ok {
+				if _, _, ok := parseContent(msg.Content); !ok {
 					return
 				}
 
@@ -200,16 +201,16 @@ func (c *Client) debugLog(t string, v interface{}) {
 	log.Println(t, string(js))
 }
 
-func ParseContent(content string) (string, string, bool) {
+var linkRegex = regexp.MustCompile(`https?://\S+`)
+var linkWrappedRegex = regexp.MustCompile(`<https?://\S+>`)
 
-	content = strings.ReplaceAll(content, "<", "")
-	content = strings.ReplaceAll(content, ">", "")
+func replaceLinks(s string) string {
+	s = linkWrappedRegex.ReplaceAllString(s, "<LINK>")
+	return linkRegex.ReplaceAllString(s, "<LINK>")
+}
 
-	// 匹配网址转换
-	urlPattern := `(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s` + "`" + `!()\[\]{};:'".,<>?«»“”‘’]))`
-	re := regexp.MustCompile(urlPattern)
-	content = re.ReplaceAllString(content, "<LINK>")
-
+func parseContent(content string) (string, string, bool) {
+	content = replaceLinks(content)
 	// Search prompt
 	split := strings.SplitN(content, "**", 3)
 	if len(split) != 3 {
@@ -354,6 +355,10 @@ func (c *Client) ReadErrorChan() chan error {
 
 func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error) {
 
+	if err := c.validator.ValidatePrompt(prompt); err != nil {
+		return nil, ai.NewError(err, false)
+	}
+
 	nonce := c.node.Generate().String()
 	imagine := &discord.InteractionCommand{
 		Type:          2,
@@ -393,8 +398,11 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 	}
 
 	// Parse prompt
-	responsePrompt, _, ok := ParseContent(response.Content)
+	responsePrompt, _, ok := parseContent(response.Content)
 	if !ok {
+		if err = c.checkError(response); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("midjourney: couldn't parse prompt from imagine response: %s", response.Content)
 	}
 
@@ -430,11 +438,33 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 	}, nil
 }
 
+var ErrInvalidParameter = errors.New("invalid parameter")
+var ErrInvalidLink = errors.New("invalid link")
+var ErrBannedPrompt = errors.New("banned prompt")
+
 func (c *Client) checkError(msg *discord.Message) error {
-	if len(msg.Embeds) > 0 && (strings.Contains(msg.Embeds[0].Description, "been blocked") || strings.Contains(msg.Embeds[0].Description, "ban")) {
-		return errors.New(msg.Embeds[0].Description)
+	if len(msg.Embeds) == 0 {
+		return nil
 	}
-	return nil
+	embed := msg.Embeds[0]
+	title := strings.ToLower(embed.Title)
+	desc := strings.ToLower(embed.Description)
+
+	switch title {
+	case "invalid parameter":
+		err := fmt.Errorf("midjourney: %w: %s", ErrInvalidParameter, desc)
+		return ai.NewError(err, false)
+	case "invalid link":
+		err := fmt.Errorf("midjourney: %w: %s", ErrInvalidLink, desc)
+		return ai.NewError(err, false)
+	case "banned prompt":
+		err := fmt.Errorf("midjourney: %w: %s", ErrBannedPrompt, desc)
+		return ai.NewError(err, false)
+	default:
+		err := fmt.Errorf("midjourney: %s: %s", title, desc)
+		return ai.NewError(err, true)
+	}
+
 }
 
 func (c *Client) Upscale(ctx context.Context, preview *ai.Preview, index int) (string, error) {
