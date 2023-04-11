@@ -112,7 +112,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				}
 
 				// Parse prompt
-				prompt, rest, ok := parseContent(msg.Content)
+				prompt, rest, ok := ParseContent(msg.Content)
 				if !ok {
 					return
 				}
@@ -146,7 +146,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				}
 
 				// Parse prompt
-				if _, _, ok := parseContent(msg.Content); !ok {
+				if _, _, ok := ParseContent(msg.Content); !ok {
 					return
 				}
 
@@ -200,16 +200,14 @@ func (c *Client) debugLog(t string, v interface{}) {
 	log.Println(t, string(js))
 }
 
-func parseContent(content string) (string, string, bool) {
+func ParseContent(content string) (string, string, bool) {
 
-	// 去除掉utf8的转义字符
-	unicodePattern := `\\u[0-9a-fA-F]{4}`
-	re := regexp.MustCompile(unicodePattern)
-	content = re.ReplaceAllString(content, "")
+	content = strings.ReplaceAll(content, "<", "")
+	content = strings.ReplaceAll(content, ">", "")
 
 	// 匹配网址转换
 	urlPattern := `(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s` + "`" + `!()\[\]{};:'".,<>?«»“”‘’]))`
-	re = regexp.MustCompile(urlPattern)
+	re := regexp.MustCompile(urlPattern)
 	content = re.ReplaceAllString(content, "<LINK>")
 
 	// Search prompt
@@ -395,7 +393,7 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 	}
 
 	// Parse prompt
-	responsePrompt, _, ok := parseContent(response.Content)
+	responsePrompt, _, ok := ParseContent(response.Content)
 	if !ok {
 		return nil, fmt.Errorf("midjourney: couldn't parse prompt from imagine response: %s", response.Content)
 	}
