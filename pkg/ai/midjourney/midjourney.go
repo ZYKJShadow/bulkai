@@ -202,13 +202,14 @@ func (c *Client) debugLog(t string, v interface{}) {
 
 func parseContent(content string) (string, string, bool) {
 
-	content = strings.ReplaceAll(content, "\\u003e", "")
+	// 去除掉utf8的转义字符
+	unicodePattern := `\\u[0-9a-fA-F]{4}`
+	re := regexp.MustCompile(unicodePattern)
+	content = re.ReplaceAllString(content, "")
 
-	// 定义一个正则表达式，用于匹配网址
+	// 匹配网址转换
 	urlPattern := `(?i)\b((?:https?://|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s` + "`" + `!()\[\]{};:'".,<>?«»“”‘’]))`
-	// 编译正则表达式
-	re := regexp.MustCompile(urlPattern)
-	// 使用正则表达式替换网址为 <LINK>
+	re = regexp.MustCompile(urlPattern)
 	content = re.ReplaceAllString(content, "<LINK>")
 
 	// Search prompt
