@@ -238,28 +238,23 @@ func (a *AiDrawClient) ReadImageChan(identify string) chan *ai.Image {
 	return nil
 }
 
-func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation bool, upscale bool, identifyCode string) error {
+func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation bool, upscale bool, identify string) error {
 
-	// New album
-	albumID := a.cfg.Album
-	if albumID == "" {
-		albumID = time.Now().UTC().Format("20060102_150405")
-	}
 	var album *Album
-	albumDir := fmt.Sprintf("%s/%s", a.cfg.Output, albumID)
+	albumDir := fmt.Sprintf("%s/%s", a.cfg.Output, identify)
 	imgDir := albumDir
 
-	// Album doesn't exist, create it
 	if album == nil {
 
 		album = &Album{
-			ID:        albumID,
+			ID:        identify,
 			Status:    "created",
 			CreatedAt: time.Now().UTC(),
 			UpdatedAt: time.Now().UTC(),
 			Images:    []*Image{},
 			Prompts:   prompts,
 		}
+
 		if err := os.MkdirAll(albumDir, 0755); err != nil {
 			return fmt.Errorf("couldn't create album directory: %w", err)
 		}
@@ -269,6 +264,7 @@ func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation
 		}
 
 		log.Println("album created:", albumDir)
+
 	}
 
 	total := len(prompts) * 4
@@ -279,7 +275,7 @@ func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation
 	imageChan := make(chan *ai.Image)
 
 	container := &Container{
-		Identify: identifyCode,
+		Identify: identify,
 		Info: &GenerateInfo{
 			Channel: imageChan,
 			Status:  NoTask,
