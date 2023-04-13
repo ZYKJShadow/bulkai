@@ -75,9 +75,11 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 	for _, s := range skip {
 		skipLookup[s] = struct{}{}
 	}
+
 	if concurrency == 0 || concurrency > cli.Concurrency() {
 		concurrency = cli.Concurrency()
 	}
+
 	chunks := make([][]entry, concurrency)
 	for i, p := range prompts {
 		if _, ok := skipLookup[i]; ok {

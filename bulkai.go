@@ -68,28 +68,28 @@ type Session struct {
 	Cookie          string `yaml:"cookie"`
 }
 
+type GenerateStatus int
+
+const (
+	NoTask GenerateStatus = iota
+	Wait
+	Process
+	Complete
+)
+
+type GenerateInfo struct {
+	Channel chan *ai.Image
+	Err     error
+	Status  GenerateStatus
+}
+
 type Container struct {
 	Identify string
-	Channel  chan *ai.Image
+	Info     *GenerateInfo
 }
 
 type MessageBroker struct {
-	Containers map[string]Container
-}
-
-func (a *AiDrawClient) AddContainer(container Container) {
-	a.Lock()
-	defer a.Unlock()
-	a.Containers[container.Identify] = container
-}
-
-func (a *AiDrawClient) SendMessage(identify string, image *ai.Image) {
-	a.Lock()
-	defer a.Unlock()
-	container, ok := a.Containers[identify]
-	if ok {
-		container.Channel <- image
-	}
+	Containers map[string]*Container
 }
 
 type AiDrawClient struct {
@@ -98,6 +98,18 @@ type AiDrawClient struct {
 	cfg        *Config
 	sync.Mutex
 	MessageBroker
+}
+
+func (a *AiDrawClient) DelContainer(identify string) {
+	a.Lock()
+	defer a.Unlock()
+	delete(a.Containers, identify)
+}
+
+func (a *AiDrawClient) AddContainer(container *Container) {
+	a.Lock()
+	defer a.Unlock()
+	a.Containers[container.Identify] = container
 }
 
 func CheckSessionInfo(cfg *Config) error {
@@ -209,11 +221,21 @@ func NewCli(ctx context.Context, cfg *Config) (drawClient *AiDrawClient, err err
 		DiscordCli: client,
 		cfg:        cfg,
 		MessageBroker: MessageBroker{
-			Containers: make(map[string]Container, 10),
+			Containers: make(map[string]*Container, 10),
 		},
 	}
 
 	return
+}
+
+func (a *AiDrawClient) ReadImageChan(identify string) chan *ai.Image {
+	a.Lock()
+	defer a.Unlock()
+	container, ok := a.Containers[identify]
+	if ok {
+		return container.Info.Channel
+	}
+	return nil
 }
 
 func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation bool, upscale bool, identifyCode string) error {
@@ -255,33 +277,39 @@ func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation
 	}
 
 	imageChan := make(chan *ai.Image)
-	a.AddContainer(Container{
+
+	container := &Container{
 		Identify: identifyCode,
-		Channel:  imageChan,
-	})
+		Info: &GenerateInfo{
+			Channel: imageChan,
+			Status:  NoTask,
+		},
+	}
+
+	a.AddContainer(container)
 
 	ai.Bulk(ctx, a.AiCli, prompts, album.Finished, variation, upscale, a.cfg.Concurrency, imageChan, a.cfg.Wait)
 
-	var exit bool
-	for !exit {
-		select {
-		case <-ctx.Done():
-			exit = true
-		case image, ok := <-imageChan:
-			if !ok {
-				break
-			} else {
-				album.UpdatedAt = time.Now().UTC()
-				images := toImages(ctx, a.DiscordCli, image, imgDir, true, upscale, false)
-				if len(images) > 0 {
-					album.Images = append(album.Images, images...)
-					if image.IsLast {
-						album.Finished = append(album.Finished, image.PromptIndex)
-					}
-				}
-			}
-		}
-	}
+	//var exit bool
+	//for !exit {
+	//	select {
+	//	case <-ctx.Done():
+	//		exit = true
+	//	case image, ok := <-imageChan:
+	//		if !ok {
+	//			break
+	//		} else {
+	//			album.UpdatedAt = time.Now().UTC()
+	//			images := toImages(ctx, a.DiscordCli, image, imgDir, true, upscale, false)
+	//			if len(images) > 0 {
+	//				album.Images = append(album.Images, images...)
+	//				if image.IsLast {
+	//					album.Finished = append(album.Finished, image.PromptIndex)
+	//				}
+	//			}
+	//		}
+	//	}
+	//}
 
 	log.Printf("album %s %s\n", albumDir, album.Status)
 	return nil
