@@ -96,7 +96,7 @@ func (s *SuperProperties) Marshal() error {
 	return nil
 }
 
-func New(ctx context.Context, cfg *Config) (*Client, error) {
+func New(cfg *Config) (*Client, error) {
 	// Parse super properties
 	superProperties := &SuperProperties{
 		raw: cfg.SuperProperties,

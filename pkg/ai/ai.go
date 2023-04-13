@@ -69,7 +69,8 @@ type entry struct {
 	index  int
 }
 
-func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variationEnabled, upscaleEnabled bool, concurrency int, wait time.Duration) <-chan (*Image) {
+func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variationEnabled, upscaleEnabled bool, concurrency int, out chan *Image, wait time.Duration) {
+
 	skipLookup := make(map[int]struct{})
 	for _, s := range skip {
 		skipLookup[s] = struct{}{}
@@ -88,7 +89,6 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 		})
 	}
 
-	out := make(chan *Image)
 	wg := sync.WaitGroup{}
 	for _, entries := range chunks {
 		entries := entries
@@ -198,7 +198,6 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 		wg.Wait()
 		close(out)
 	}()
-	return out
 }
 
 func (i *Image) FileName() string {

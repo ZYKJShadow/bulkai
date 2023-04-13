@@ -90,8 +90,8 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 			switch {
 			case len(msg.Attachments) > 0:
 
-				// Ignore webp attachments as they are not fully finished images
-				if msg.Attachments[0].ContentType == "image/webp" {
+				// Ignore messages that don't have components
+				if len(msg.Components) == 0 {
 					return
 				}
 
@@ -142,6 +142,10 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 
 				// Parse prompt
 				if _, _, ok := parseContent(msg.Content); !ok {
+					// Check if there is an error message
+					if err := c.checkError(&msg); err == nil {
+						return
+					}
 					return
 				}
 
@@ -213,6 +217,30 @@ func parseContent(content string) (string, string, bool) {
 	prompt := split[1]
 	rest := split[2]
 	return prompt, rest, true
+}
+
+func parseEmbedFooter(prompt string, msg *discord.Message) (string, error) {
+	if len(msg.Embeds) == 0 {
+		return "", errors.New("midjourney: message has no embed")
+	}
+	embed := msg.Embeds[0]
+	if embed.Footer == nil {
+		return "", errors.New("midjourney: embed has no footer")
+	}
+	footer := embed.Footer.Text
+	if !strings.HasPrefix(footer, "/imagine ") {
+		return "", fmt.Errorf("midjourney: footer doesn't start with /imagine: %s", footer)
+	}
+	footer = strings.TrimPrefix(footer, "/imagine ")
+	if !strings.HasPrefix(footer, prompt) {
+		return "", fmt.Errorf("midjourney: footer doesn't start with prompt: %s", footer)
+	}
+	suffixes := strings.TrimPrefix(footer, prompt)
+	// Remove extra space that sometimes appears when suffixes are configured
+	if strings.HasPrefix(suffixes, "  ") {
+		suffixes = strings.TrimPrefix(suffixes, " ")
+	}
+	return fmt.Sprintf("%s%s", prompt, suffixes), nil
 }
 
 type search interface {
@@ -390,10 +418,21 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 	// Parse prompt
 	responsePrompt, _, ok := parseContent(response.Content)
 	if !ok {
-		if err = c.checkError(response); err != nil {
+		// Check if the response contains an error message
+		err = c.checkError(response)
+		switch {
+		case errors.Is(err, ErrJobQueued):
+			// The job is queued, so it will be processed.
+			// We will take the response prompt from the message embed footer.
+			responsePrompt, err = parseEmbedFooter(prompt, response)
+			if err != nil {
+				return nil, err
+			}
+		case err != nil:
 			return nil, err
+		default:
+			return nil, fmt.Errorf("midjourney: couldn't parse prompt from imagine response: %s", response.Content)
 		}
-		return nil, fmt.Errorf("midjourney: couldn't parse prompt from imagine response: %s", response.Content)
 	}
 
 	preview, err := c.receiveMessage(ctx, previewSearch(responsePrompt), nil)
@@ -431,6 +470,8 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 var ErrInvalidParameter = errors.New("invalid parameter")
 var ErrInvalidLink = errors.New("invalid link")
 var ErrBannedPrompt = errors.New("banned prompt")
+var ErrJobQueued = errors.New("job queued")
+var ErrQueueFull = errors.New("queue full")
 
 func (c *Client) checkError(msg *discord.Message) error {
 	if len(msg.Embeds) == 0 {

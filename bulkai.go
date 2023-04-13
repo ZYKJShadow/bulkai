@@ -1,14 +1,12 @@
 package bulkai
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -70,23 +68,36 @@ type Session struct {
 	Cookie          string `yaml:"cookie"`
 }
 
-type Status struct {
-	Percentage float32
-	Estimated  time.Duration
-	Err        error
-	StatusInfo string
+type Container struct {
+	Identify string
+	Channel  chan *ai.Image
 }
 
-type Option func(*option)
-
-type option struct {
-	onUpdate func(Status)
+type MessageBroker struct {
+	Containers map[string]Container
 }
 
-func WithOnUpdate(onUpdate func(Status)) Option {
-	return func(o *option) {
-		o.onUpdate = onUpdate
+func (a *AiDrawClient) AddContainer(container Container) {
+	a.Lock()
+	defer a.Unlock()
+	a.Containers[container.Identify] = container
+}
+
+func (a *AiDrawClient) SendMessage(identify string, image *ai.Image) {
+	a.Lock()
+	defer a.Unlock()
+	container, ok := a.Containers[identify]
+	if ok {
+		container.Channel <- image
 	}
+}
+
+type AiDrawClient struct {
+	AiCli      ai.Client
+	DiscordCli *discord.Client
+	cfg        *Config
+	sync.Mutex
+	MessageBroker
 }
 
 func CheckSessionInfo(cfg *Config) error {
@@ -114,111 +125,48 @@ func CheckSessionInfo(cfg *Config) error {
 	return nil
 }
 
-// Generate launches multiple ai generations.
-func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
+func NewCli(ctx context.Context, cfg *Config) (drawClient *AiDrawClient, err error) {
 
-	err := CheckSessionInfo(cfg)
+	err = CheckSessionInfo(cfg)
 	if err != nil {
-		return err
-	}
-
-	// Load options
-	o := &option{}
-	for _, opt := range opts {
-		opt(o)
+		return
 	}
 
 	var newCli func(*discord.Client, string, string, bool) (ai.Client, error)
-	var cli ai.Client
+
 	switch strings.ToLower(cfg.Bot) {
 	case "bluewillow":
 		newCli = bluewillow.New
 	case "midjourney":
 		newCli = midjourney.New
 	default:
-		return fmt.Errorf("unsupported bot: %s", cfg.Bot)
-	}
-
-	// New album
-	albumID := cfg.Album
-	if albumID == "" {
-		albumID = time.Now().UTC().Format("20060102_150405")
-	}
-	var album *Album
-	albumDir := fmt.Sprintf("%s/%s", cfg.Output, albumID)
-	imgDir := albumDir
-
-	var prompts []string
-
-	if len(prompts) == 0 {
-		if len(cfg.Prompts) == 0 {
-			return errors.New("missing prompt")
-		}
-
-		// Build prompts
-		for _, prompt := range cfg.Prompts {
-			// Check if prompt is a file
-			if _, err := os.Stat(prompt); err != nil {
-				prompts = append(prompts, prompt)
-				continue
-			}
-			// Read lines from file
-			file, err := os.Open(prompt)
-			if err != nil {
-				return fmt.Errorf("couldn't open prompt file: %w", err)
-			}
-			scanner := bufio.NewScanner(file)
-			for scanner.Scan() {
-				prompt := strings.TrimSpace(scanner.Text())
-				if prompt == "" {
-					continue
-				}
-				prompts = append(prompts, prompt)
-			}
-			_ = file.Close()
-			// Check for errors
-			if err := scanner.Err(); err != nil {
-				return fmt.Errorf("couldn't read prompt file: %w", err)
-			}
-		}
-
-		for i, prompt := range prompts {
-			prompts[i] = fmt.Sprintf("%s%s%s", cfg.Prefix, prompt, cfg.Suffix)
-		}
-		sort.Strings(prompts)
-	}
-
-	// Check total images
-	var lck sync.Mutex
-	total := len(prompts) * 4
-	if cfg.Variation {
-		total = total + total*4
+		return nil, fmt.Errorf("unsupported bot: %s", cfg.Bot)
 	}
 
 	// Create http client
 	httpClient, err := http.NewClient(cfg.Session.JA3, cfg.Session.UserAgent, cfg.Session.Language, cfg.Proxy)
 	if err != nil {
-		return fmt.Errorf("couldn't create http client: %w", err)
+		return nil, fmt.Errorf("couldn't create http client: %w", err)
 	}
 
 	// Set proxy
 	if cfg.Proxy != "" {
 		p := strings.TrimPrefix(cfg.Proxy, "http://")
 		p = strings.TrimPrefix(p, "https://")
-		os.Setenv("HTTPS_PROXY", p)
-		os.Setenv("HTTP_PROXY", p)
+		_ = os.Setenv("HTTPS_PROXY", p)
+		_ = os.Setenv("HTTP_PROXY", p)
 	}
 
 	if err := http.SetCookies(httpClient, "https://discord.com", cfg.Session.Cookie); err != nil {
-		return fmt.Errorf("couldn't set cookies: %w", err)
+		return nil, fmt.Errorf("couldn't set cookies: %w", err)
 	}
+
 	defer func() {
 		cookie, err := http.GetCookies(httpClient, "https://discord.com")
 		if err != nil {
 			log.Printf("couldn't get cookies: %v\n", err)
 		}
 		cfg.Session.Cookie = strings.ReplaceAll(cookie, "\n", "")
-		// TODO: save session to common method
 		data, err := yaml.Marshal(cfg.Session)
 		if err != nil {
 			log.Println(fmt.Errorf("couldn't marshal session: %w", err))
@@ -228,8 +176,8 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 		}
 	}()
 
-	// Create discord client
-	client, err := discord.New(ctx, &discord.Config{
+	// discord client
+	client, err := discord.New(&discord.Config{
 		Token:           cfg.Session.Token,
 		SuperProperties: cfg.Session.SuperProperties,
 		Locale:          cfg.Session.Locale,
@@ -238,25 +186,50 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 		Debug:           cfg.Debug,
 		Proxy:           cfg.Proxy,
 	})
+
 	if err != nil {
-		return fmt.Errorf("couldn't create discord client: %w", err)
+		return nil, fmt.Errorf("couldn't create discord client: %w", err)
 	}
 
 	// Start discord client
 	if err := client.Start(ctx); err != nil {
-		return fmt.Errorf("couldn't start discord client: %w", err)
+		return nil, fmt.Errorf("couldn't start discord client: %w", err)
 	}
 
-	cli, err = newCli(client, cfg.Channel, cfg.GuildID, cfg.Debug)
+	cli, err := newCli(client, cfg.Channel, cfg.GuildID, cfg.Debug)
 	if err != nil {
-		return fmt.Errorf("couldn't create %s client: %w", cfg.Bot, err)
+		return nil, fmt.Errorf("couldn't create %s client: %w", cfg.Bot, err)
 	}
 	if err := cli.Start(ctx); err != nil {
-		return fmt.Errorf("couldn't start ai client: %w", err)
+		return nil, fmt.Errorf("couldn't start ai client: %w", err)
 	}
+
+	drawClient = &AiDrawClient{
+		AiCli:      cli,
+		DiscordCli: client,
+		cfg:        cfg,
+		MessageBroker: MessageBroker{
+			Containers: make(map[string]Container, 10),
+		},
+	}
+
+	return
+}
+
+func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation bool, upscale bool, identifyCode string) error {
+
+	// New album
+	albumID := a.cfg.Album
+	if albumID == "" {
+		albumID = time.Now().UTC().Format("20060102_150405")
+	}
+	var album *Album
+	albumDir := fmt.Sprintf("%s/%s", a.cfg.Output, albumID)
+	imgDir := albumDir
 
 	// Album doesn't exist, create it
 	if album == nil {
+
 		album = &Album{
 			ID:        albumID,
 			Status:    "created",
@@ -268,69 +241,54 @@ func Generate(ctx context.Context, cfg *Config, opts ...Option) error {
 		if err := os.MkdirAll(albumDir, 0755); err != nil {
 			return fmt.Errorf("couldn't create album directory: %w", err)
 		}
-		if cfg.Download {
-			if err := os.MkdirAll(imgDir, 0755); err != nil {
-				return fmt.Errorf("couldn't create album images directory: %w", err)
-			}
+
+		if err := os.MkdirAll(imgDir, 0755); err != nil {
+			return fmt.Errorf("couldn't create album images directory: %w", err)
 		}
+
 		log.Println("album created:", albumDir)
 	}
 
-	imageChan := ai.Bulk(ctx, cli, prompts, album.Finished, cfg.Variation, cfg.Upscale, cfg.Concurrency, cfg.Wait)
+	total := len(prompts) * 4
+	if variation {
+		total = total + total*4
+	}
+
+	imageChan := make(chan *ai.Image)
+	a.AddContainer(Container{
+		Identify: identifyCode,
+		Channel:  imageChan,
+	})
+
+	ai.Bulk(ctx, a.AiCli, prompts, album.Finished, variation, upscale, a.cfg.Concurrency, imageChan, a.cfg.Wait)
+
 	var exit bool
 	for !exit {
-		var status string
 		select {
 		case <-ctx.Done():
-			status = "cancelled"
 			exit = true
 		case image, ok := <-imageChan:
 			if !ok {
-				status = "finished"
-				if album.Percentage < 100 {
-					status = "partially finished"
-					o.onUpdate(Status{
-						StatusInfo: status,
-					})
-				}
 				break
 			} else {
-				status = "running"
-				lck.Lock()
 				album.UpdatedAt = time.Now().UTC()
-				images := toImages(ctx, client, image, imgDir, cfg.Download, cfg.Upscale, cfg.Thumbnail)
+				images := toImages(ctx, a.DiscordCli, image, imgDir, true, upscale, false)
 				if len(images) > 0 {
 					album.Images = append(album.Images, images...)
 					if image.IsLast {
 						album.Finished = append(album.Finished, image.PromptIndex)
 					}
 				}
-				lck.Unlock()
 			}
 		}
-		lck.Lock()
-		album.UpdatedAt = time.Now().UTC()
-		percentage := float32(len(album.Images)) * 100.0 / float32(total)
-		if percentage > album.Percentage {
-			avg := album.UpdatedAt.Sub(album.CreatedAt) / time.Duration(len(album.Images))
-			estimated := (time.Duration(total-len(album.Images)) * avg).Round(time.Minute)
-			if o.onUpdate != nil {
-				o.onUpdate(Status{
-					Percentage: percentage,
-					Estimated:  estimated,
-					StatusInfo: status,
-				})
-			}
-		}
-		album.Percentage = percentage
-		album.Status = status
-		lck.Unlock()
 	}
+
 	log.Printf("album %s %s\n", albumDir, album.Status)
 	return nil
 }
 
 func toImages(ctx context.Context, client *discord.Client, image *ai.Image, imgDir string, download, upscale, preview bool) []*Image {
+
 	if !download {
 		return []*Image{{
 			Prompt: image.Prompt,
@@ -345,7 +303,6 @@ func toImages(ctx context.Context, client *discord.Client, image *ai.Image, imgD
 		log.Println(fmt.Errorf("❌ couldn't download `%s`: %w", image.URL, err))
 	}
 
-	// Generate preview image
 	if upscale && preview {
 		base := filepath.Base(imgOutput)
 		base = base[:len(base)-len(filepath.Ext(base))]
@@ -355,7 +312,6 @@ func toImages(ctx context.Context, client *discord.Client, image *ai.Image, imgD
 		}
 	}
 
-	// Current image is an upscale image, return it
 	if upscale {
 		return []*Image{{
 			Prompt: image.Prompt,
@@ -366,7 +322,6 @@ func toImages(ctx context.Context, client *discord.Client, image *ai.Image, imgD
 
 	var images []*Image
 
-	// Split preview images when upscale is disabled
 	localFiles := image.FileNames()
 	var imgOutputs []string
 	for _, localFile := range localFiles {
@@ -382,7 +337,6 @@ func toImages(ctx context.Context, client *discord.Client, image *ai.Image, imgD
 		return images
 	}
 
-	// Create preview images
 	if preview {
 		for _, imgOutput := range imgOutputs {
 			base := filepath.Base(imgOutput)
