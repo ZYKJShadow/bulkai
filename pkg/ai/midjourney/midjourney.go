@@ -143,7 +143,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				// Parse prompt
 				if _, _, ok := parseContent(msg.Content); !ok {
 					// Check if there is an error message
-					if err := c.checkError(&msg); err == nil {
+					if err = c.checkError(&msg); err == nil {
 						return
 					}
 					return
