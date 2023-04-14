@@ -311,7 +311,7 @@ func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation
 	return nil
 }
 
-func toImages(ctx context.Context, client *discord.Client, image *ai.Image, imgDir string, download, upscale, preview bool) []*Image {
+func (a *AiDrawClient) ToImages(ctx context.Context, client *discord.Client, image *ai.Image, imgDir string, download, upscale, preview bool) []*Image {
 
 	if !download {
 		return []*Image{{
