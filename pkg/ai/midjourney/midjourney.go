@@ -5,17 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ZYKJShadow/bulkai/pkg/ai"
+	"github.com/ZYKJShadow/bulkai/pkg/discord"
+	"github.com/bwmarrin/discordgo"
+	"github.com/bwmarrin/snowflake"
 	"log"
 	"math/rand"
 	"regexp"
 	"strings"
 	"sync"
-	"time"
-
-	"github.com/ZYKJShadow/bulkai/pkg/ai"
-	"github.com/ZYKJShadow/bulkai/pkg/discord"
-	"github.com/bwmarrin/discordgo"
-	"github.com/bwmarrin/snowflake"
 )
 
 const (
@@ -25,6 +23,7 @@ const (
 	variationTerm   = "Variations by"
 	upscaleID       = "MJ::JOB::upsample::"
 	variationID     = "MJ::JOB::variation::"
+	upscaleProcess  = "Upscaling image"
 )
 
 type Client struct {
@@ -65,24 +64,19 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 	}
 
 	c.c.OnEvent(func(e *discordgo.Event) (err error) {
+
+		var msg discord.Message
+		if err = json.Unmarshal(e.RawData, &msg); err != nil {
+			log.Println("midjourney: couldn't unmarshal message: %w", err)
+			return
+		}
+		c.debugLog(e.Type, msg)
+
 		switch e.Type {
 
 		case discord.InteractionCreateEvent, discord.InteractionSuccessEvent:
-			var msg discord.Message
-			if err = json.Unmarshal(e.RawData, &msg); err != nil {
-				log.Println("midjourney: couldn't unmarshal message: %w", err)
-				return
-			}
-			c.debugLog(e.Type, msg)
 
 		case discord.MessageCreateEvent, discord.MessageUpdateEvent:
-
-			var msg discord.Message
-			if err = json.Unmarshal(e.RawData, &msg); err != nil {
-				log.Println("midjourney: couldn't unmarshal message: %w", err)
-				return
-			}
-			c.debugLog(e.Type, e.RawData)
 
 			var key search
 			var cacheID string
@@ -178,7 +172,9 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				return
 			}
 		}
+
 		return
+
 	})
 	return c, nil
 }
@@ -272,6 +268,7 @@ func (s nonceSearch) value() string {
 }
 
 func (c *Client) receiveMessage(parent context.Context, key search, fn func() error) (*discord.Message, error) {
+
 	msgChan := make(chan *discord.Message)
 	defer close(msgChan)
 	c.lck.Lock()
@@ -296,18 +293,17 @@ func (c *Client) receiveMessage(parent context.Context, key search, fn func() er
 	}
 
 	// Add a timeout to receive the message
-	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
-	defer cancel()
 
 	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	case <-parent.Done():
+		return nil, parent.Err()
 	case msg := <-msgChan:
 		if err := c.checkError(msg); err != nil {
 			return nil, err
 		}
 		return msg, nil
 	}
+
 }
 
 func (c *Client) Start(ctx context.Context) error {

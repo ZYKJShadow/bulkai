@@ -68,24 +68,9 @@ type Session struct {
 	Cookie          string `yaml:"cookie"`
 }
 
-type GenerateStatus int
-
-const (
-	NoTask GenerateStatus = iota
-	Wait
-	Process
-	Complete
-)
-
-type GenerateInfo struct {
-	Channel chan *ai.Image
-	Err     error
-	Status  GenerateStatus
-}
-
 type Container struct {
 	Identify string
-	Info     *GenerateInfo
+	Info     chan *ai.GenerateInfo
 }
 
 type MessageBroker struct {
@@ -228,12 +213,12 @@ func NewCli(ctx context.Context, cfg *Config) (drawClient *AiDrawClient, err err
 	return
 }
 
-func (a *AiDrawClient) ReadImageChan(identify string) chan *ai.Image {
+func (a *AiDrawClient) ReadImageChan(identify string) chan *ai.GenerateInfo {
 	a.Lock()
 	defer a.Unlock()
 	container, ok := a.Containers[identify]
 	if ok {
-		return container.Info.Channel
+		return container.Info
 	}
 	return nil
 }
@@ -272,40 +257,16 @@ func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation
 		total = total + total*4
 	}
 
-	imageChan := make(chan *ai.Image)
+	infoChan := make(chan *ai.GenerateInfo)
 
 	container := &Container{
 		Identify: identify,
-		Info: &GenerateInfo{
-			Channel: imageChan,
-			Status:  NoTask,
-		},
+		Info:     infoChan,
 	}
 
 	a.AddContainer(container)
 
-	ai.Bulk(ctx, a.AiCli, prompts, album.Finished, variation, upscale, a.cfg.Concurrency, imageChan, a.cfg.Wait)
-
-	//var exit bool
-	//for !exit {
-	//	select {
-	//	case <-ctx.Done():
-	//		exit = true
-	//	case image, ok := <-imageChan:
-	//		if !ok {
-	//			break
-	//		} else {
-	//			album.UpdatedAt = time.Now().UTC()
-	//			images := toImages(ctx, a.DiscordCli, image, imgDir, true, upscale, false)
-	//			if len(images) > 0 {
-	//				album.Images = append(album.Images, images...)
-	//				if image.IsLast {
-	//					album.Finished = append(album.Finished, image.PromptIndex)
-	//				}
-	//			}
-	//		}
-	//	}
-	//}
+	ai.Bulk(ctx, a.AiCli, prompts, album.Finished, variation, upscale, a.cfg.Concurrency, infoChan, a.cfg.Wait)
 
 	log.Printf("album %s %s\n", albumDir, album.Status)
 	return nil

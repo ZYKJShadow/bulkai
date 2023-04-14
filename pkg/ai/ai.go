@@ -30,6 +30,22 @@ type Client interface {
 	Concurrency() int
 }
 
+type GenerateStatus int
+
+const (
+	NoTask GenerateStatus = iota
+	Wait
+	Process
+	Complete
+	Fail
+)
+
+type GenerateInfo struct {
+	Image  *Image
+	Err    error
+	Status GenerateStatus
+}
+
 type Image struct {
 	URL    string
 	Prompt string
@@ -69,7 +85,7 @@ type entry struct {
 	index  int
 }
 
-func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variationEnabled, upscaleEnabled bool, concurrency int, out chan *Image, wait time.Duration) {
+func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variationEnabled, upscaleEnabled bool, concurrency int, out chan *GenerateInfo, wait time.Duration) {
 
 	skipLookup := make(map[int]struct{})
 	for _, s := range skip {
@@ -121,35 +137,53 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 				// Launch preview
 				preview, err := imagine(cli, ctx, e.prompt)
 				if err != nil {
-					log.Println(fmt.Errorf("❌ couldn't imagine %s %w", e.prompt, err))
+					out <- &GenerateInfo{
+						Status: Fail,
+						Err:    err,
+					}
 					break
 				}
 
 				if !upscaleEnabled {
-					out <- &Image{
-						URL:         preview.URL,
-						Prompt:      e.prompt,
-						Preview:     true,
-						PromptIndex: e.index,
-						ImageIndex:  0,
-						IsLast:      true,
+					out <- &GenerateInfo{
+						Image: &Image{
+							URL:         preview.URL,
+							Prompt:      e.prompt,
+							Preview:     true,
+							PromptIndex: e.index,
+							ImageIndex:  0,
+							IsLast:      true,
+						},
+						Status: Complete,
 					}
 				}
 
 				// Upscale or get variation for each image
 				for i := range preview.ImageIDs {
+					last := i == len(preview.ImageIDs)-1
 					if upscaleEnabled {
 						u, err := upscale(cli, ctx, preview, i)
 						if err != nil {
-							log.Println(fmt.Errorf("❌ couldn't upscale %s %d: %w", e.prompt, i, err))
+							out <- &GenerateInfo{
+								Status: Fail,
+								Err:    err,
+							}
 							continue
 						}
-						out <- &Image{
-							URL:         u,
-							Prompt:      e.prompt,
-							PromptIndex: e.index,
-							ImageIndex:  i,
-							IsLast:      i == len(preview.ImageIDs)-1 && !variationEnabled,
+						isLast := last && !variationEnabled
+						status := Process
+						if isLast {
+							status = Complete
+						}
+						out <- &GenerateInfo{
+							Image: &Image{
+								URL:         u,
+								Prompt:      e.prompt,
+								PromptIndex: e.index,
+								ImageIndex:  i,
+								IsLast:      isLast,
+							},
+							Status: status,
 						}
 					}
 
@@ -160,18 +194,30 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 					// Get variation
 					variationPreview, err := variation(cli, ctx, preview, i)
 					if err != nil {
-						log.Println(fmt.Errorf("❌ couldn't get variation: %w", err))
+						out <- &GenerateInfo{
+							Status: Fail,
+							Err:    err,
+						}
 						continue
 					}
 
 					if !upscaleEnabled {
-						out <- &Image{
-							URL:         variationPreview.URL,
-							Prompt:      e.prompt,
-							Preview:     true,
-							PromptIndex: e.index,
-							ImageIndex:  4 + i*4,
-							IsLast:      i == len(preview.ImageIDs)-1,
+
+						status := Process
+						if last {
+							status = Complete
+						}
+
+						out <- &GenerateInfo{
+							Image: &Image{
+								URL:         variationPreview.URL,
+								Prompt:      e.prompt,
+								Preview:     true,
+								PromptIndex: e.index,
+								ImageIndex:  4 + i*4,
+								IsLast:      last,
+							},
+							Status: status,
 						}
 						continue
 					}
@@ -181,15 +227,26 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 						var u string
 						u, err := upscale(cli, ctx, variationPreview, j)
 						if err != nil {
-							log.Println(fmt.Errorf("❌ couldn't upscale %s %d: %w", e.prompt, j, err))
+							out <- &GenerateInfo{
+								Status: Fail,
+								Err:    err,
+							}
 							continue
 						}
-						out <- &Image{
-							URL:         u,
-							Prompt:      e.prompt,
-							PromptIndex: e.index,
-							ImageIndex:  4 + i*4 + j,
-							IsLast:      i == len(preview.ImageIDs)-1 && j == len(variationPreview.ImageIDs)-1,
+						last := last && j == len(variationPreview.ImageIDs)-1
+						status := Process
+						if last {
+							status = Complete
+						}
+						out <- &GenerateInfo{
+							Image: &Image{
+								URL:         u,
+								Prompt:      e.prompt,
+								PromptIndex: e.index,
+								ImageIndex:  4 + i*4 + j,
+								IsLast:      last,
+							},
+							Status: status,
 						}
 					}
 				}
