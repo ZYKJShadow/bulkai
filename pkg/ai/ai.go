@@ -253,10 +253,6 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 			}
 		}()
 	}
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
 }
 
 func (i *Image) FileName() string {

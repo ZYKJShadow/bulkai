@@ -70,7 +70,8 @@ type Session struct {
 
 type Container struct {
 	Identify string
-	Info     chan *ai.GenerateInfo
+	InfoChan chan *ai.GenerateInfo
+	Task     int
 }
 
 type MessageBroker struct {
@@ -89,6 +90,12 @@ func (a *AiDrawClient) DelContainer(identify string) {
 	a.Lock()
 	defer a.Unlock()
 	delete(a.Containers, identify)
+}
+
+func (a *AiDrawClient) GetContainer(identify string) *Container {
+	a.Lock()
+	defer a.Unlock()
+	return a.Containers[identify]
 }
 
 func (a *AiDrawClient) AddContainer(container *Container) {
@@ -218,7 +225,7 @@ func (a *AiDrawClient) ReadImageChan(identify string) chan *ai.GenerateInfo {
 	defer a.Unlock()
 	container, ok := a.Containers[identify]
 	if ok {
-		return container.Info
+		return container.InfoChan
 	}
 	return nil
 }
@@ -257,17 +264,21 @@ func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation
 		total = total + total*4
 	}
 
-	infoChan := make(chan *ai.GenerateInfo)
-
-	container := &Container{
-		Identify: identify,
-		Info:     infoChan,
+	container := a.GetContainer(identify)
+	if container == nil {
+		infoChan := make(chan *ai.GenerateInfo)
+		container = &Container{
+			Identify: identify,
+			InfoChan: infoChan,
+			Task:     1,
+		}
+		a.AddContainer(container)
+	} else {
+		container.Task++
 	}
 
-	a.AddContainer(container)
-
-	ai.Bulk(ctx, a.AiCli, prompts, album.Finished, variation, upscale, a.cfg.Concurrency, infoChan, a.cfg.Wait)
-
+	ai.Bulk(ctx, a.AiCli, prompts, album.Finished, variation, upscale, a.cfg.Concurrency, container.InfoChan, a.cfg.Wait)
+	
 	log.Printf("album %s %s\n", albumDir, album.Status)
 	return nil
 }
