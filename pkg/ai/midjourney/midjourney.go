@@ -84,15 +84,12 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 			switch {
 			case len(msg.Attachments) > 0:
 
-				// Ignore messages that don't have components
 				if len(msg.Components) == 0 {
 					return
 				}
 
-				// Attachment based message
 				cacheID = msg.Attachments[0].URL
 
-				// Ignore message already in the cache
 				c.lck.Lock()
 				_, ok := c.cache[cacheID]
 				c.lck.Unlock()
@@ -100,7 +97,6 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 					return
 				}
 
-				// Parse prompt
 				prompt, rest, ok := parseContent(msg.Content)
 				if !ok {
 					return
@@ -110,23 +106,15 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				case strings.Contains(rest, upscaleTerm) || strings.Contains(rest, imageNumberTerm):
 					key = upscaleSearch(prompt)
 				case strings.Contains(rest, variationTerm):
-					// Ignore messages that don't have preview data
-					if len(msg.Components) == 0 {
-						return
-					}
 					key = variationSearch(prompt)
 				default:
-					// Ignore messages that don't have preview data
-					if len(msg.Components) == 0 {
-						return
-					}
 					key = previewSearch(prompt)
 				}
 			case msg.Nonce != "":
-				// Nonce based message
+
 				cacheID = msg.Nonce
 
-				// Ignore message already in the cache
+				// 忽略已经在缓存中的消息
 				c.lck.Lock()
 				_, ok := c.cache[cacheID]
 				c.lck.Unlock()
@@ -134,9 +122,8 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 					return
 				}
 
-				// Parse prompt
 				if _, _, ok := parseContent(msg.Content); !ok {
-					// Check if there is an error message
+					// 检查错误内容
 					if err = c.checkError(&msg); err == nil {
 						return
 					}
@@ -146,7 +133,6 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				key = nonceSearch(msg.Nonce)
 			}
 
-			// Search for matching callbacks
 			for {
 				c.lck.Lock()
 				callbacks := c.callback[key]
@@ -154,18 +140,15 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 					c.lck.Unlock()
 					return
 				}
-				// Get and remove the first callback
+
 				f := callbacks[0]
 				c.callback[key] = callbacks[1:]
 				c.lck.Unlock()
 
-				// Launch the callback
 				if ok := f(&msg); !ok {
-					// If returns false, it means it was expired
 					continue
 				}
 
-				// Add the message to the cache
 				c.lck.Lock()
 				c.cache[cacheID] = struct{}{}
 				c.lck.Unlock()
@@ -174,8 +157,8 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 		}
 
 		return
-
 	})
+
 	return c, nil
 }
 
@@ -285,14 +268,11 @@ func (c *Client) receiveMessage(parent context.Context, key search, fn func() er
 	})
 	c.lck.Unlock()
 
-	// Execute the function if any
 	if fn != nil {
 		if err := fn(); err != nil {
 			return nil, err
 		}
 	}
-
-	// Add a timeout to receive the message
 
 	select {
 	case <-parent.Done():
