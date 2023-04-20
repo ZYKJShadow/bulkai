@@ -12,7 +12,6 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20230109101555-6b041c6303cc
 	github.com/chromedp/chromedp v0.8.7
 	github.com/gorilla/websocket v1.5.0
-	github.com/peterbourgon/ff/v3 v3.3.0
 	golang.org/x/image v0.5.0
 	golang.org/x/net v0.7.0
 	gopkg.in/yaml.v2 v2.4.0

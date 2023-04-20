@@ -70,6 +70,11 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 			log.Println("midjourney: couldn't unmarshal message: %w", err)
 			return
 		}
+
+		if msg.ChannelID != c.channelID || msg.GuildID != c.guildID {
+			return
+		}
+
 		c.debugLog(e.Type, msg)
 
 		switch e.Type {
