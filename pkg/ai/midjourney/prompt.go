@@ -55,7 +55,7 @@ func (v *validator) ValidatePrompt(prompt string) error {
 	// Check if any words are banned
 	for _, word := range words {
 		if _, ok := v.banned[word]; ok {
-			return fmt.Errorf("midjourney: word %q is banned", word)
+			return fmt.Errorf("%q 是违禁词，无法使用", word)
 		}
 	}
 	return nil
