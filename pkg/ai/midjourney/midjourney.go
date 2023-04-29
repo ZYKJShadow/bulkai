@@ -283,9 +283,6 @@ func (c *Client) receiveMessage(parent context.Context, key search, fn func() er
 	case <-parent.Done():
 		return nil, parent.Err()
 	case msg := <-msgChan:
-		if err := c.checkError(msg); err != nil {
-			return nil, err
-		}
 		return msg, nil
 	}
 
