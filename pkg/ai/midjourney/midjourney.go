@@ -67,7 +67,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 
 		var msg discord.Message
 		if err = json.Unmarshal(e.RawData, &msg); err != nil {
-			log.Println("midjourney: couldn't unmarshal message: %w", err)
+			//log.Println("midjourney: couldn't unmarshal message: %w", err)
 			return
 		}
 
