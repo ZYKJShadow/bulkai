@@ -40,6 +40,7 @@ type Client struct {
 }
 
 func New(client *discord.Client, channelID string, guildID string, debug bool) (ai.Client, error) {
+
 	node, err := snowflake.NewNode(0)
 	if err != nil {
 		return nil, fmt.Errorf("midjourney: couldn't create snowflake node")
@@ -66,16 +67,17 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 	c.c.OnEvent(func(e *discordgo.Event) {
 
 		var msg discord.Message
+
+		c.debugLog(e.Type, msg)
+
 		if err = json.Unmarshal(e.RawData, &msg); err != nil {
 			//log.Println("midjourney: couldn't unmarshal message: %w", err)
 			return
 		}
 
-		if msg.ChannelID != c.channelID || msg.GuildID != c.guildID {
+		if msg.ChannelID != c.channelID {
 			return
 		}
-
-		c.debugLog(e.Type, msg)
 
 		switch e.Type {
 
@@ -132,7 +134,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 					if err = c.checkError(&msg); err == nil {
 						return
 					}
-					return
+
 				}
 
 				key = nonceSearch(msg.Nonce)
@@ -472,6 +474,15 @@ func (c *Client) checkError(msg *discord.Message) error {
 		return ai.NewError(err, false)
 	case "banned prompt", "banned prompt detected":
 		err := fmt.Errorf("midjourney: %w: %s", ErrBannedPrompt, desc)
+		return ai.NewError(err, false)
+	case "job queued":
+		err := fmt.Errorf("midjourney: %w: %s", ErrJobQueued, desc)
+		return ai.NewError(err, false)
+	case "queue full":
+		err := fmt.Errorf("midjourney: %w: %s", ErrQueueFull, desc)
+		return ai.NewError(err, true)
+	case "pending mod message":
+		err := fmt.Errorf("midjourney: %w: %s", ErrPendingMod, desc)
 		return ai.NewError(err, false)
 	default:
 		err := fmt.Errorf("midjourney: %s: %s", title, desc)
