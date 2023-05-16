@@ -71,7 +71,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 		guildID:   guildID,
 	}
 
-	c.c.OnEvent(func(e *discordgo.Event) (err error) {
+	c.c.OnEvent(func(e *discordgo.Event) {
 		switch e.Type {
 		case discord.MessageCreateEvent, discord.MessageUpdateEvent:
 			var msg discord.Message
