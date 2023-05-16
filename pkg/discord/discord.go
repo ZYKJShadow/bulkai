@@ -34,7 +34,7 @@ type Client struct {
 	userAgent       string
 	client          *http.Client
 	session         *discordgo.Session
-	callbacks       []func(*discordgo.Event) error
+	callbacks       []func(*discordgo.Event)
 	dm              map[string]string
 	debug           bool
 
@@ -110,7 +110,7 @@ func New(cfg *Config) (*Client, error) {
 	}
 	userID, err := base64.RawStdEncoding.DecodeString(split[0])
 	if err != nil {
-		return nil, fmt.Errorf("discord: couldn't decode user id %s: %w", string(split[0]), err)
+		return nil, fmt.Errorf("discord: couldn't decode user id %s: %w", split[0], err)
 	}
 
 	session, err := newSession(cfg.Dialer, cfg.Token, cfg.UserAgent, cfg.Proxy)
@@ -126,7 +126,7 @@ func New(cfg *Config) (*Client, error) {
 		userAgent:       cfg.UserAgent,
 		Referer:         cfg.Referer,
 		client:          cfg.HTTPClient,
-		callbacks:       []func(*discordgo.Event) error{},
+		callbacks:       []func(*discordgo.Event){},
 		session:         session,
 		dm:              make(map[string]string),
 		debug:           cfg.Debug,
@@ -141,7 +141,7 @@ func (c *Client) Session() string {
 	return c.session.State.SessionID
 }
 
-func (c *Client) OnEvent(callback func(*discordgo.Event) error) {
+func (c *Client) OnEvent(callback func(*discordgo.Event)) {
 	c.callbackLck.Lock()
 	defer c.callbackLck.Unlock()
 	c.callbacks = append(c.callbacks, callback)
@@ -194,6 +194,36 @@ func (c *Client) Do(ctx context.Context, method string, path string, body interf
 }
 
 var errBadGateway = errors.New("discord: bad gateway")
+
+type Error struct {
+	Code      int    `json:"code"`
+	Message   string `json:"message"`
+	temporary bool
+}
+
+func (e Error) Error() string {
+	return fmt.Sprintf("discord: %s (%d)", e.Message, e.Code)
+}
+
+func (e Error) Temporary() bool {
+	return e.temporary
+}
+
+var ErrMessageNotFound = &Error{Message: "Unknown Message", Code: 10008, temporary: false}
+
+func parseError(raw string) error {
+	var err Error
+	if err := json.Unmarshal([]byte(raw), &err); err != nil {
+		return nil
+	}
+	err.temporary = true
+	switch err.Code {
+	case 10008:
+		return ErrMessageNotFound
+	default:
+		return err
+	}
+}
 
 func (c *Client) do(method string, path string, body interface{}) ([]byte, error) {
 	// Rate limit
@@ -269,6 +299,9 @@ func (c *Client) do(method string, path string, body interface{}) ([]byte, error
 		return nil, errBadGateway
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if err := parseError(string(data)); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("discord: request %s returned status code %d (%s)", path, resp.StatusCode, string(data))
 	}
 	return data, nil
@@ -356,6 +389,11 @@ func retry(ctx context.Context, maxAttempts int, fn func() error) error {
 		// Increase attempts and check if we should stop
 		attempts++
 		if attempts >= maxAttempts {
+			return err
+		}
+		// If the error is not temporary, we stop
+		var discordErr Error
+		if errors.As(err, &discordErr) && !discordErr.Temporary() {
 			return err
 		}
 		// Bad gateway usually means discord is down, so we wait before retrying
