@@ -7,45 +7,65 @@ import (
 	"fmt"
 	"github.com/ZYKJShadow/bulkai/pkg/ai"
 	"github.com/ZYKJShadow/bulkai/pkg/discord"
-	"github.com/bwmarrin/discordgo"
-	"github.com/bwmarrin/snowflake"
+	"github.com/igolaizola/askimg"
 	"log"
-	"math/rand"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/bwmarrin/snowflake"
 )
 
 const (
-	botID           = "936929561302675456"
-	upscaleTerm     = "Upscaled by"
-	imageNumberTerm = "Image #"
-	variationTerm   = "Variations by"
-	upscaleID       = "MJ::JOB::upsample::"
-	variationID     = "MJ::JOB::variation::"
-	upscaleProcess  = "Upscaling image"
+	botID               = "936929561302675456"
+	upscaleTerm         = "Upscaled by"
+	imageNumberTerm     = "Image #"
+	variationTerm       = "Variations by"
+	variationSubtleTerm = "Variations (Subtle) by"
+	variationStrongTerm = "Variations (Strong) by"
+	upscaleID           = "MJ::JOB::upsample::"
+	variationID         = "MJ::JOB::variation::"
 )
 
 type Client struct {
-	c         *discord.Client
-	debug     bool
-	node      *snowflake.Node
-	callback  map[search][]func(*discord.Message) bool
-	cache     map[string]struct{}
-	lck       sync.Mutex
-	channelID string
-	guildID   string
-	cmd       *discordgo.ApplicationCommand
-	validator Validator
+	c              *discord.Client
+	debug          bool
+	node           *snowflake.Node
+	callback       map[search][]func(*discord.Message) bool
+	cache          map[string]struct{}
+	lck            sync.Mutex
+	channelID      string
+	guildID        string
+	cmd            *discordgo.ApplicationCommand
+	validator      Validator
+	replicateToken string
+	dumps          []string
+	dumpLock       sync.Mutex
+	timeout        time.Duration
+	queuedTimeout  time.Duration
+	midjourneyCDN  bool
 }
 
-func New(client *discord.Client, channelID string, guildID string, debug bool) (ai.Client, error) {
+type Config struct {
+	Debug          bool
+	ChannelID      string
+	ReplicateToken string
+	Timeout        time.Duration
+	QueuedTimeout  time.Duration
+	MidjourneyCDN  bool
+}
 
+func New(client *discord.Client, cfg *Config) (ai.Client, error) {
 	node, err := snowflake.NewNode(0)
 	if err != nil {
 		return nil, fmt.Errorf("midjourney: couldn't create snowflake node")
 	}
 
+	channelID := cfg.ChannelID
 	if channelID == "" {
 		channelID = client.DM(botID)
 		if channelID == "" {
@@ -53,50 +73,82 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 		}
 	}
 
+	guildID := ""
+	if split := strings.SplitN(channelID, "/", 2); len(split) == 2 {
+		guildID = split[0]
+		channelID = split[1]
+	}
+	if guildID != "" {
+		client.Referer = fmt.Sprintf("channels/%s/%s", guildID, channelID)
+	} else {
+		client.Referer = fmt.Sprintf("channels/@me/%s", channelID)
+	}
+
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Minute
+	}
+	queuedTimeout := cfg.QueuedTimeout
+	if queuedTimeout == 0 {
+		queuedTimeout = 20 * time.Minute
+	}
+
 	c := &Client{
-		c:         client,
-		debug:     debug,
-		node:      node,
-		callback:  make(map[search][]func(*discord.Message) bool),
-		cache:     make(map[string]struct{}),
-		channelID: channelID,
-		guildID:   guildID,
-		validator: NewValidator(),
+		c:              client,
+		debug:          cfg.Debug,
+		node:           node,
+		callback:       make(map[search][]func(*discord.Message) bool),
+		cache:          make(map[string]struct{}),
+		channelID:      channelID,
+		guildID:        guildID,
+		validator:      NewValidator(),
+		replicateToken: cfg.ReplicateToken,
+		timeout:        timeout,
+		queuedTimeout:  queuedTimeout,
+		midjourneyCDN:  cfg.MidjourneyCDN,
 	}
 
 	c.c.OnEvent(func(e *discordgo.Event) {
-
-		var msg discord.Message
-
-		c.debugLog(e.Type, msg)
-
-		if err = json.Unmarshal(e.RawData, &msg); err != nil {
-			//log.Println("midjourney: couldn't unmarshal message: %w", err)
-			return
-		}
-
-		if msg.ChannelID != c.channelID {
-			return
-		}
-
 		switch e.Type {
-
-		case discord.InteractionCreateEvent, discord.InteractionSuccessEvent:
-
 		case discord.MessageCreateEvent, discord.MessageUpdateEvent:
+			var msg discord.Message
+			if err := json.Unmarshal(e.RawData, &msg); err != nil {
+				log.Println("midjourney: couldn't unmarshal message: %w", err)
+			}
+			// Ignore messages from other channels
+			if msg.ChannelID != c.channelID {
+				return
+			}
+			c.debugLog(e.Type, e.RawData)
+
+			// Check action
+			ok, err := c.checkAction(&msg)
+			if err != nil {
+				js, _ := json.Marshal(msg)
+				log.Println(string(js))
+				log.Println(err)
+				c.debugLog("ERR", err)
+				c.saveDump()
+				panic("❌ midjourney: action required")
+			}
+			if ok {
+				return
+			}
 
 			var key search
 			var cacheID string
 
 			switch {
 			case len(msg.Attachments) > 0:
-
+				// Ignore messages that don't have components
 				if len(msg.Components) == 0 {
 					return
 				}
 
-				cacheID = msg.Attachments[0].URL
+				// Attachment based message
+				cacheID = cleanURL(msg.Attachments[0].URL)
 
+				// Ignore message already in the cache
 				c.lck.Lock()
 				_, ok := c.cache[cacheID]
 				c.lck.Unlock()
@@ -104,24 +156,28 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 					return
 				}
 
+				// Parse prompt
 				prompt, rest, ok := parseContent(msg.Content)
 				if !ok {
 					return
 				}
 
+				// Remove links from the prompt
+				prompt = replaceLinks(prompt)
+
 				switch {
 				case strings.Contains(rest, upscaleTerm) || strings.Contains(rest, imageNumberTerm):
 					key = upscaleSearch(prompt)
-				case strings.Contains(rest, variationTerm):
+				case strings.Contains(rest, variationTerm) || strings.Contains(rest, variationSubtleTerm) || strings.Contains(rest, variationStrongTerm):
 					key = variationSearch(prompt)
 				default:
 					key = previewSearch(prompt)
 				}
 			case msg.Nonce != "":
-
+				// Nonce based message
 				cacheID = msg.Nonce
 
-				// 忽略已经在缓存中的消息
+				// Ignore message already in the cache
 				c.lck.Lock()
 				_, ok := c.cache[cacheID]
 				c.lck.Unlock()
@@ -129,17 +185,34 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 					return
 				}
 
+				// Parse prompt
 				if _, _, ok := parseContent(msg.Content); !ok {
-					// 检查错误内容
-					if err = c.checkError(&msg); err == nil {
-						return
+					// Check if there is an error message
+					if err := parseError(&msg); err == nil {
+						// Check if there is interaction data
+						if msg.Interaction == nil || msg.Interaction.ID == "" {
+							return
+						}
 					}
-
 				}
 
 				key = nonceSearch(msg.Nonce)
+			case msg.Interaction != nil && msg.Interaction.ID != "" && msg.Interaction.Name == "imagine":
+				// Interaction based message
+				cacheID = msg.Interaction.ID
+
+				// Ignore message already in the cache
+				c.lck.Lock()
+				_, ok := c.cache[cacheID]
+				c.lck.Unlock()
+				if ok {
+					return
+				}
+
+				key = interactionSearch(msg.Interaction.ID)
 			}
 
+			// Search for matching callbacks
 			for {
 				c.lck.Lock()
 				callbacks := c.callback[key]
@@ -147,54 +220,76 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 					c.lck.Unlock()
 					return
 				}
-
+				// Get and remove the first callback
 				f := callbacks[0]
 				c.callback[key] = callbacks[1:]
 				c.lck.Unlock()
 
+				// Launch the callback
 				if ok := f(&msg); !ok {
+					// If returns false, it means it was expired
 					continue
 				}
 
+				// Add the message to the cache
 				c.lck.Lock()
 				c.cache[cacheID] = struct{}{}
 				c.lck.Unlock()
 				return
 			}
 		}
-
-		return
 	})
-
 	return c, nil
 }
 
 func (c *Client) Concurrency() int {
-	return 3
+	return 12
 }
 
 func (c *Client) debugLog(t string, v interface{}) {
-	if !c.debug {
-		return
-	}
 	if v == nil {
-		log.Println(t)
+		if c.debug {
+			log.Println(t)
+		}
 		return
 	}
-	js, _ := json.MarshalIndent(v, "", "  ")
-	log.Println(t, string(js))
+	js, _ := json.Marshal(v)
+
+	// Save dump
+	c.dumpLock.Lock()
+	c.dumps = append(c.dumps, string(js))
+	if len(c.dumps) > 100 {
+		c.dumps = c.dumps[len(c.dumps)-100:]
+	}
+	c.dumpLock.Unlock()
+
+	if c.debug {
+		log.Println(t, string(js))
+	}
 }
 
-var linkRegex = regexp.MustCompile(`https?://\S+`)
-var linkWrappedRegex = regexp.MustCompile(`<https?://\S+>`)
-
-func replaceLinks(s string) string {
-	s = linkWrappedRegex.ReplaceAllString(s, "<LINK>")
-	return linkRegex.ReplaceAllString(s, "<LINK>")
+func (c *Client) saveDump() {
+	c.dumpLock.Lock()
+	defer c.dumpLock.Unlock()
+	var output string
+	for _, dump := range c.dumps {
+		output += dump + "\n"
+	}
+	// Create logs directory if it doesn't exist
+	if err := os.MkdirAll("logs", 0755); err != nil {
+		log.Println("midjourney: couldn't create logs directory:", err)
+		return
+	}
+	// Save dump using the current time
+	now := time.Now()
+	filename := fmt.Sprintf("logs/dump_%s.txt", now.Format("20060102_150405"))
+	if err := os.WriteFile(filename, []byte(output), 0644); err != nil {
+		log.Println("midjourney: couldn't save dump:", err)
+		return
+	}
 }
 
 func parseContent(content string) (string, string, bool) {
-	content = replaceLinks(content)
 	// Search prompt
 	split := strings.SplitN(content, "**", 3)
 	if len(split) != 3 {
@@ -229,6 +324,74 @@ func parseEmbedFooter(prompt string, msg *discord.Message) (string, error) {
 	return fmt.Sprintf("%s%s", prompt, suffixes), nil
 }
 
+// Errors parsed from messages
+var ErrInvalidParameter = errors.New("invalid parameter")
+var ErrInvalidLink = errors.New("invalid link")
+var ErrBannedPrompt = errors.New("banned prompt")
+var ErrActionNeeded = errors.New("action needed to continue")
+var ErrJobQueued = errors.New("job queued")
+var ErrQueueFull = errors.New("queue full")
+var ErrPendingMod = errors.New("pending mod message")
+var ErrActionRequired = errors.New("action required to continue")
+var ErrCompleteTask = errors.New("please complete the task")
+var ErrInvalidRequest = errors.New("invalid request")
+var ErrJobActionRestricted = errors.New("job action restricted")
+var ErrEmptyPrompt = errors.New("empty prompt")
+
+// Other errors
+var ErrMessageNotFound = ai.NewError(errors.New("message not found"), false)
+
+func parseError(msg *discord.Message) error {
+	if len(msg.Embeds) == 0 {
+		return nil
+	}
+	embed := msg.Embeds[0]
+	title := strings.ToLower(embed.Title)
+	desc := strings.ToLower(embed.Description)
+
+	switch title {
+	case "invalid parameter":
+		err := fmt.Errorf("midjourney: %w: %s", ErrInvalidParameter, desc)
+		return ai.NewError(err, false)
+	case "invalid link":
+		err := fmt.Errorf("midjourney: %w: %s", ErrInvalidLink, desc)
+		return ai.NewError(err, false)
+	case "banned prompt", "banned prompt detected", "banned image prompt":
+		err := fmt.Errorf("midjourney: %w: %s", ErrBannedPrompt, desc)
+		return ai.NewError(err, false)
+	case "action needed to continue":
+		err := fmt.Errorf("midjourney: %w: %s", ErrActionNeeded, desc)
+		return ai.NewError(err, false)
+	case "job queued":
+		err := fmt.Errorf("midjourney: %w: %s", ErrJobQueued, desc)
+		return ai.NewError(err, false)
+	case "queue full":
+		err := fmt.Errorf("midjourney: %w: %s", ErrQueueFull, desc)
+		return ai.NewError(err, true)
+	case "pending mod message":
+		err := fmt.Errorf("midjourney: %w: %s", ErrPendingMod, desc)
+		return ai.NewFatal(err)
+	case "action required to continue":
+		err := fmt.Errorf("midjourney: %w: %s", ErrActionRequired, desc)
+		return ai.NewFatal(err)
+	case "please complete the task":
+		err := fmt.Errorf("midjourney: %w: %s", ErrCompleteTask, desc)
+		return ai.NewFatal(err)
+	case "invalid request":
+		err := fmt.Errorf("midjourney: %w: %s", ErrInvalidRequest, desc)
+		return ai.NewFatal(err)
+	case "job action restricted":
+		err := fmt.Errorf("midjourney: %w: %s", ErrJobActionRestricted, desc)
+		return ai.NewFatal(err)
+	case "empty prompt":
+		err := fmt.Errorf("midjourney: %w: %s", ErrEmptyPrompt, desc)
+		return ai.NewFatal(err)
+	default:
+		err := fmt.Errorf("midjourney: %s: %s", title, desc)
+		return ai.NewError(err, true)
+	}
+}
+
 type search interface {
 	value() string
 }
@@ -257,8 +420,13 @@ func (s nonceSearch) value() string {
 	return string(s)
 }
 
-func (c *Client) receiveMessage(parent context.Context, key search, fn func() error) (*discord.Message, error) {
+type interactionSearch string
 
+func (s interactionSearch) value() string {
+	return string(s)
+}
+
+func (c *Client) receiveMessage(parent context.Context, key search, timeout time.Duration, fn func() error) (*discord.Message, error) {
 	msgChan := make(chan *discord.Message)
 	defer close(msgChan)
 	c.lck.Lock()
@@ -275,19 +443,23 @@ func (c *Client) receiveMessage(parent context.Context, key search, fn func() er
 	})
 	c.lck.Unlock()
 
+	// Execute the function if any
 	if fn != nil {
 		if err := fn(); err != nil {
 			return nil, err
 		}
 	}
 
+	// Add a timeout to receive the message
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
 	select {
-	case <-parent.Done():
-		return nil, parent.Err()
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	case msg := <-msgChan:
 		return msg, nil
 	}
-
 }
 
 func (c *Client) Start(ctx context.Context) error {
@@ -310,23 +482,20 @@ func (c *Client) Start(ctx context.Context) error {
 			return fmt.Errorf("midjourney: couldn't find application id for user %s", botID)
 		}
 
-		u = fmt.Sprintf("channels/%s/application-commands/search?type=1&include_applications=true", c.channelID)
+		u = fmt.Sprintf("channels/%s/application-command-index", c.channelID)
 		resp, err = c.c.Do(ctx, "GET", u, nil)
 		if err != nil {
-			return fmt.Errorf("midjourney: couldn't get application command search: %w", err)
+			return fmt.Errorf("midjourney: couldn't get channel application commands: %w", err)
 		}
 		if err := json.Unmarshal(resp, &appSearch); err != nil {
 			return fmt.Errorf("midjourney: couldn't unmarshal application command search %s: %w", string(resp), err)
 		}
 	default:
 		// Search for command in a guild channel
-		typings := []string{"im", "ima", "imag", "imagi", "imagin"}
-		typing := typings[rand.Intn(len(typings))]
-
-		u := fmt.Sprintf("channels/%s/application-commands/search?type=1&query=%s&limit=7&include_applications=false", c.channelID, typing)
+		u := fmt.Sprintf("guilds/%s/application-command-index", c.guildID)
 		resp, err := c.c.Do(ctx, "GET", u, nil)
 		if err != nil {
-			return fmt.Errorf("midjourney: couldn't get application command search: %w", err)
+			return fmt.Errorf("midjourney: couldn't get guild application commands: %w", err)
 		}
 		if err := json.Unmarshal(resp, &appSearch); err != nil {
 			return fmt.Errorf("midjourney: couldn't unmarshal application command search %s: %w", string(resp), err)
@@ -352,7 +521,7 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error) {
-
+	// Validate prompt
 	if err := c.validator.ValidatePrompt(prompt); err != nil {
 		return nil, ai.NewError(err, false)
 	}
@@ -382,27 +551,26 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 	}
 	c.debugLog("IMAGINE", imagine)
 
-	response, err := c.receiveMessage(ctx, nonceSearch(nonce), func() error {
+	timeout := c.timeout
+
+	response, err := c.receiveMessage(ctx, nonceSearch(nonce), timeout, func() error {
 		// Launch interaction inside the receive message process because the
 		// response may be received before it finishes, due to rate limit
 		// locking.
 		if _, err := c.c.Do(ctx, "POST", "interactions", imagine); err != nil {
-			if errors.Is(err, discord.ErrMessageNotFound) {
-				return errors.New("message not found")
-			}
 			return fmt.Errorf("midjourney: couldn't send imagine interaction: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("midjourney: couldn't receive imagine response: %w", err)
+		return nil, fmt.Errorf("midjourney: couldn't receive imagine response (%s): %w", nonce, err)
 	}
 
 	// Parse prompt
 	responsePrompt, _, ok := parseContent(response.Content)
 	if !ok {
 		// Check if the response contains an error message
-		err = c.checkError(response)
+		err := parseError(response)
 		switch {
 		case errors.Is(err, ErrJobQueued):
 			// The job is queued, so it will be processed.
@@ -411,16 +579,31 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 			if err != nil {
 				return nil, err
 			}
+			timeout = c.queuedTimeout
 		case err != nil:
 			return nil, err
+		case response.Interaction != nil && response.Interaction.ID != "":
+			// Search the response prompt by the interaction id
+			response, err := c.receiveMessage(ctx, interactionSearch(response.Interaction.ID), timeout, nil)
+			if err != nil {
+				return nil, fmt.Errorf("midjourney: couldn't receive imagine response (%s): %w", nonce, err)
+			}
+			responsePrompt, _, ok = parseContent(response.Content)
+			if !ok {
+				return nil, fmt.Errorf("midjourney: couldn't parse prompt from update message: %s", response.Content)
+			}
 		default:
 			return nil, fmt.Errorf("midjourney: couldn't parse prompt from imagine response: %s", response.Content)
 		}
 	}
 
-	preview, err := c.receiveMessage(ctx, previewSearch(responsePrompt), nil)
+	// The response prompt links may differ from the final links, so we need to
+	// replace them with placeholders.
+	responsePrompt = replaceLinks(responsePrompt)
+
+	preview, err := c.receiveMessage(ctx, previewSearch(responsePrompt), timeout, nil)
 	if err != nil {
-		return nil, fmt.Errorf("midjourney: couldn't receive links message: %w", err)
+		return nil, fmt.Errorf("midjourney: couldn't receive links message for (%s): %w", responsePrompt, err)
 	}
 
 	var imageIDs []string
@@ -450,50 +633,9 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 	}, nil
 }
 
-var ErrInvalidParameter = errors.New("invalid parameter")
-var ErrInvalidLink = errors.New("invalid link")
-var ErrBannedPrompt = errors.New("banned prompt")
-var ErrJobQueued = errors.New("job queued")
-var ErrQueueFull = errors.New("queue full")
-var ErrPendingMod = errors.New("pending mod message")
-
-func (c *Client) checkError(msg *discord.Message) error {
-	if len(msg.Embeds) == 0 {
-		return nil
-	}
-	embed := msg.Embeds[0]
-	title := strings.ToLower(embed.Title)
-	desc := strings.ToLower(embed.Description)
-
-	switch title {
-	case "invalid parameter":
-		err := fmt.Errorf("midjourney: %w: %s", ErrInvalidParameter, desc)
-		return ai.NewError(err, false)
-	case "invalid link":
-		err := fmt.Errorf("midjourney: %w: %s", ErrInvalidLink, desc)
-		return ai.NewError(err, false)
-	case "banned prompt", "banned prompt detected":
-		err := fmt.Errorf("midjourney: %w: %s", ErrBannedPrompt, desc)
-		return ai.NewError(err, false)
-	case "job queued":
-		err := fmt.Errorf("midjourney: %w: %s", ErrJobQueued, desc)
-		return ai.NewError(err, false)
-	case "queue full":
-		err := fmt.Errorf("midjourney: %w: %s", ErrQueueFull, desc)
-		return ai.NewError(err, true)
-	case "pending mod message":
-		err := fmt.Errorf("midjourney: %w: %s", ErrPendingMod, desc)
-		return ai.NewError(err, false)
-	default:
-		err := fmt.Errorf("midjourney: %s: %s", title, desc)
-		return ai.NewError(err, true)
-	}
-
-}
-
-func (c *Client) Upscale(ctx context.Context, preview *ai.Preview, index int) (string, error) {
+func (c *Client) Upscale(ctx context.Context, preview *ai.Preview, index int) ([]string, error) {
 	if index < 0 || index >= len(preview.ImageIDs) {
-		return "", fmt.Errorf("midjourney: invalid index %d", index)
+		return nil, fmt.Errorf("midjourney: invalid index %d", index)
 	}
 	customID := fmt.Sprintf("%s%s", upscaleID, preview.ImageIDs[index])
 	nonce := c.node.Generate().String()
@@ -512,22 +654,34 @@ func (c *Client) Upscale(ctx context.Context, preview *ai.Preview, index int) (s
 	}
 	c.debugLog("UPSCALE", upscale)
 
-	msg, err := c.receiveMessage(ctx, upscaleSearch(preview.ResponsePrompt), func() error {
+	msg, err := c.receiveMessage(ctx, upscaleSearch(preview.ResponsePrompt), c.timeout, func() error {
 		// Launch interaction inside the receive message process because the
 		// response may be received before it finishes, due to rate limit
 		// locking.
 		if _, err := c.c.Do(ctx, "POST", "interactions", upscale); err != nil {
+			// Check if the message was deleted
 			if errors.Is(err, discord.ErrMessageNotFound) {
-				return errors.New("message not found")
+				return ErrMessageNotFound
 			}
 			return fmt.Errorf("midjourney: couldn't send upscale interaction: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("midjourney: couldn't receive links message: %w", err)
+		return nil, fmt.Errorf("midjourney: couldn't receive links message: %w", err)
 	}
-	return msg.Attachments[0].URL, nil
+
+	discordURL := msg.Attachments[0].URL
+	mjURL, err := toMidjourneyCDN(preview.ImageIDs[index])
+	if err != nil {
+		return nil, err
+	}
+	urls := []string{discordURL, mjURL}
+	// Give priority to midjourney CDN URL if enabled
+	if c.midjourneyCDN {
+		urls = []string{mjURL, discordURL}
+	}
+	return urls, nil
 }
 
 func (c *Client) Variation(ctx context.Context, preview *ai.Preview, index int) (*ai.Preview, error) {
@@ -551,13 +705,14 @@ func (c *Client) Variation(ctx context.Context, preview *ai.Preview, index int) 
 	}
 	c.debugLog("VARIATION", variation)
 
-	msg, err := c.receiveMessage(ctx, variationSearch(preview.ResponsePrompt), func() error {
+	msg, err := c.receiveMessage(ctx, variationSearch(preview.ResponsePrompt), c.timeout, func() error {
 		// Launch interaction inside the receive message process because the
 		// response may be received before it finishes, due to rate limit
 		// locking.
 		if _, err := c.c.Do(ctx, "POST", "interactions", variation); err != nil {
+			// Check if the message was deleted
 			if errors.Is(err, discord.ErrMessageNotFound) {
-				return errors.New("message not found")
+				return ErrMessageNotFound
 			}
 			return fmt.Errorf("midjourney: couldn't send variation interaction: %w", err)
 		}
@@ -592,4 +747,121 @@ func (c *Client) Variation(ctx context.Context, preview *ai.Preview, index int) 
 		MessageID:      msg.ID,
 		ImageIDs:       imageIDs,
 	}, nil
+}
+
+func (c *Client) checkAction(msg *discord.Message) (bool, error) {
+	if len(msg.Components) == 0 {
+		return false, nil
+	}
+	components := msg.Components[0].Components
+	if len(components) == 0 {
+		return false, nil
+	}
+	if !strings.HasPrefix(components[0].CustomID, "MJ::Captcha") {
+		return false, nil
+	}
+	if c.replicateToken == "" {
+		return false, fmt.Errorf("midjourney: action required")
+	}
+	if len(msg.Embeds) == 0 {
+		return false, fmt.Errorf("midjourney: missing embed in action")
+	}
+	if msg.Embeds[0].Image == nil {
+		return false, fmt.Errorf("midjourney: missing image in embed")
+	}
+	image := msg.Embeds[0].Image.URL
+	if image == "" {
+		return false, fmt.Errorf("midjourney: missing image url in embed")
+	}
+
+	var options []string
+	for _, comp := range components {
+		options = append(options, strings.TrimSpace(strings.ToLower(comp.Label)))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	question := fmt.Sprintf("Choose one: %s", strings.Join(options, ", "))
+	response, err := askimg.Ask(ctx, &askimg.Config{
+		Token:    c.replicateToken,
+		Image:    image,
+		Question: question,
+		Timeout:  1 * time.Minute,
+	})
+	if err != nil {
+		return false, fmt.Errorf("midjourney: couldn't ask image: %w", err)
+	}
+	c.debugLog("ASK", struct {
+		Question string `json:"question"`
+		Response string `json:"response"`
+	}{Question: question, Response: response})
+
+	response = strings.TrimSpace(strings.ToLower(response))
+	if response == "" {
+		return false, fmt.Errorf("midjourney: no response from image")
+	}
+
+	match := -1
+	for i, opt := range options {
+		if strings.HasPrefix(opt, response) || strings.HasPrefix(response, opt) {
+			match = i
+			break
+		}
+	}
+	if match < 0 {
+		return false, fmt.Errorf("midjourney: match not found (%s) in (%s)", response, strings.Join(options, ", "))
+	}
+
+	// Launch click button
+	click := &discord.InteractionComponent{
+		Type:          3,
+		Nonce:         c.node.Generate().String(),
+		GuildID:       c.guildID,
+		ChannelID:     c.channelID,
+		MessageID:     msg.ID,
+		ApplicationID: c.cmd.ApplicationID,
+		SessionID:     c.c.Session(),
+		Data: discord.InteractionComponentData{
+			ComponentType: 2,
+			CustomID:      components[match].CustomID,
+		},
+	}
+	c.debugLog("CLICK", click)
+	if _, err := c.c.Do(ctx, "POST", "interactions", click); err != nil {
+		return false, fmt.Errorf("midjourney: couldn't send click interaction: %w", err)
+	}
+	log.Printf("✅ midjourney: action completed (%s) %d %s %s\n", strings.Join(options, ","), match, response, image)
+	return true, nil
+}
+
+var linkRegex = regexp.MustCompile(`https?://[^\s]+`)
+var linkWrappedRegex = regexp.MustCompile(`<https?://[^\s]+>`)
+
+func replaceLinks(s string) string {
+	s = linkWrappedRegex.ReplaceAllString(s, "<LINK>")
+	return linkRegex.ReplaceAllString(s, "<LINK>")
+}
+
+func cleanURL(u string) string {
+	return strings.Split(u, "?")[0]
+}
+
+func toMidjourneyCDN(imageID string) (string, error) {
+	split := strings.Split(imageID, "::")
+	if len(split) != 2 {
+		return "", fmt.Errorf("midjourney: couldn't split image id: %s", imageID)
+	}
+	index, err := strconv.Atoi(split[0])
+	if err != nil {
+		return "", fmt.Errorf("midjourney: couldn't convert image index %s: %w", split[0], err)
+	}
+	if index < 1 || index > 4 {
+		return "", fmt.Errorf("midjourney: invalid image index %d", index)
+	}
+	index--
+	id := split[1]
+	if id == "" {
+		return "", fmt.Errorf("midjourney: empty id")
+	}
+	return fmt.Sprintf("https://cdn.midjourney.com/%s/0_%d.png", id, index), nil
 }

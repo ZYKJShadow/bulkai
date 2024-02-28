@@ -14,7 +14,6 @@ import (
 	"golang.org/x/image/webp"
 )
 
-// Split4 Split splits an image into 4 images
 func Split4(input string, outputs []string) error {
 	// Get encoder and decoder
 	ext := filepath.Ext(input)
@@ -65,7 +64,7 @@ func Split4(input string, outputs []string) error {
 
 			// Crop image
 			cropped := image.NewRGBA(image.Rect(0, 0, width, height))
-			draw.Draw(cropped, cropped.Bounds(), img, image.Point{x*width + incX, y*height + incY}, draw.Src)
+			draw.Draw(cropped, cropped.Bounds(), img, image.Point{X: x*width + incX, Y: y*height + incY}, draw.Src)
 
 			// Encode image
 			var buf bytes.Buffer

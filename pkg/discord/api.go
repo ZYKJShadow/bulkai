@@ -1,9 +1,6 @@
 package discord
 
-import (
-	"github.com/bwmarrin/discordgo"
-	"time"
-)
+import "github.com/bwmarrin/discordgo"
 
 type InteractionCommand struct {
 	Type          int                    `json:"type"`
@@ -67,31 +64,20 @@ type Message struct {
 	// A list of attachments present in the message.
 	Attachments []*discordgo.MessageAttachment `json:"attachments"`
 
-	Timestamp time.Time `json:"timestamp"`
+	// A list of components attached to the message.
+	Components []*Component `json:"components"`
 
 	// A list of embeds present in the message.
 	Embeds []*discordgo.MessageEmbed `json:"embeds"`
 
-	Pinned bool `json:"pinned"`
+	// Interaction data
+	Interaction *Interaction `json:"interaction"`
+}
 
-	MessageReference *discordgo.MessageReference `json:"message_reference"`
-
-	// The message associated with the message_reference
-	// NOTE: This field is only returned for messages with a type of 19 (REPLY) or 21 (THREAD_STARTER_MESSAGE).
-	// If the message is a reply but the referenced_message field is not present,
-	// the backend did not attempt to fetch the message that was being replied to, so its state is unknown.
-	// If the field exists but is null, the referenced message was deleted.
-	ReferencedMessage *Message `json:"referenced_message"`
-
-	Type *discordgo.MessageType `json:"type"`
-
-	EditedTimestamp *time.Time `json:"edited_timestamp"`
-
-	// The roles mentioned in the message.
-	MentionRoles []string `json:"mention_roles"`
-
-	// A list of components attached to the message.
-	Components []*Component `json:"components"`
+type Interaction struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type int    `json:"type"`
 }
 
 type Component struct {

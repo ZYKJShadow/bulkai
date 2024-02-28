@@ -25,25 +25,9 @@ type Preview struct {
 type Client interface {
 	Start(ctx context.Context) error
 	Imagine(ctx context.Context, prompt string) (*Preview, error)
-	Upscale(ctx context.Context, preview *Preview, index int) (string, error)
+	Upscale(ctx context.Context, preview *Preview, index int) ([]string, error)
 	Variation(ctx context.Context, preview *Preview, index int) (*Preview, error)
 	Concurrency() int
-}
-
-type GenerateStatus int
-
-const (
-	NoTask GenerateStatus = iota
-	Wait
-	Process
-	Complete
-	Fail
-)
-
-type GenerateInfo struct {
-	Image  *Image
-	Err    error
-	Status GenerateStatus
 }
 
 type Image struct {
@@ -59,12 +43,20 @@ type Image struct {
 type Error struct {
 	error
 	temporary bool
+	fatal     bool
 }
 
 func NewError(err error, temporary bool) Error {
 	return Error{
 		error:     err,
 		temporary: temporary,
+	}
+}
+
+func NewFatal(err error) Error {
+	return Error{
+		error: err,
+		fatal: true,
 	}
 }
 
@@ -80,22 +72,23 @@ func (e Error) Temporary() bool {
 	return e.temporary
 }
 
+func (e Error) Fatal() bool {
+	return e.fatal
+}
+
 type entry struct {
 	prompt string
 	index  int
 }
 
-func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variationEnabled, upscaleEnabled bool, concurrency int, out chan *GenerateInfo, wait time.Duration) {
-
+func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variationEnabled, upscaleEnabled bool, concurrency int, wait time.Duration) <-chan (*Image) {
 	skipLookup := make(map[int]struct{})
 	for _, s := range skip {
 		skipLookup[s] = struct{}{}
 	}
-
 	if concurrency == 0 || concurrency > cli.Concurrency() {
 		concurrency = cli.Concurrency()
 	}
-
 	chunks := make([][]entry, concurrency)
 	for i, p := range prompts {
 		if _, ok := skipLookup[i]; ok {
@@ -107,6 +100,7 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 		})
 	}
 
+	out := make(chan (*Image))
 	wg := sync.WaitGroup{}
 	for _, entries := range chunks {
 		entries := entries
@@ -115,15 +109,12 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 		}
 		wg.Add(1)
 		go func() {
-
 			defer wg.Done()
 			for k, e := range entries {
-
 				currWait := wait
 				if k == 0 {
 					currWait = 1 * time.Second
 				}
-
 				if currWait > 0 {
 					// Wait before sending next request
 					// use a random value between 85% and 115% of the wait time
@@ -137,53 +128,35 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 				// Launch preview
 				preview, err := imagine(cli, ctx, e.prompt)
 				if err != nil {
-					out <- &GenerateInfo{
-						Status: Fail,
-						Err:    err,
-					}
-					break
+					log.Println(fmt.Errorf("❌ couldn't imagine %s %w", e.prompt, err))
+					continue
 				}
 
 				if !upscaleEnabled {
-					out <- &GenerateInfo{
-						Image: &Image{
-							URL:         preview.URL,
-							Prompt:      e.prompt,
-							Preview:     true,
-							PromptIndex: e.index,
-							ImageIndex:  0,
-							IsLast:      true,
-						},
-						Status: Complete,
+					out <- &Image{
+						URL:         preview.URL,
+						Prompt:      e.prompt,
+						Preview:     true,
+						PromptIndex: e.index,
+						ImageIndex:  0,
+						IsLast:      true,
 					}
 				}
 
 				// Upscale or get variation for each image
 				for i := range preview.ImageIDs {
-					last := i == len(preview.ImageIDs)-1
 					if upscaleEnabled {
 						u, err := upscale(cli, ctx, preview, i)
 						if err != nil {
-							out <- &GenerateInfo{
-								Status: Fail,
-								Err:    err,
-							}
+							log.Println(fmt.Errorf("❌ couldn't upscale %s %d: %w", e.prompt, i, err))
 							continue
 						}
-						isLast := last && !variationEnabled
-						status := Process
-						if isLast {
-							status = Complete
-						}
-						out <- &GenerateInfo{
-							Image: &Image{
-								URL:         u,
-								Prompt:      e.prompt,
-								PromptIndex: e.index,
-								ImageIndex:  i,
-								IsLast:      isLast,
-							},
-							Status: status,
+						out <- &Image{
+							URL:         u,
+							Prompt:      e.prompt,
+							PromptIndex: e.index,
+							ImageIndex:  i,
+							IsLast:      i == len(preview.ImageIDs)-1 && !variationEnabled,
 						}
 					}
 
@@ -194,30 +167,18 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 					// Get variation
 					variationPreview, err := variation(cli, ctx, preview, i)
 					if err != nil {
-						out <- &GenerateInfo{
-							Status: Fail,
-							Err:    err,
-						}
+						log.Println(fmt.Errorf("❌ couldn't get variation: %w", err))
 						continue
 					}
 
 					if !upscaleEnabled {
-
-						status := Process
-						if last {
-							status = Complete
-						}
-
-						out <- &GenerateInfo{
-							Image: &Image{
-								URL:         variationPreview.URL,
-								Prompt:      e.prompt,
-								Preview:     true,
-								PromptIndex: e.index,
-								ImageIndex:  4 + i*4,
-								IsLast:      last,
-							},
-							Status: status,
+						out <- &Image{
+							URL:         variationPreview.URL,
+							Prompt:      e.prompt,
+							Preview:     true,
+							PromptIndex: e.index,
+							ImageIndex:  4 + i*4,
+							IsLast:      i == len(preview.ImageIDs)-1,
 						}
 						continue
 					}
@@ -227,50 +188,38 @@ func Bulk(ctx context.Context, cli Client, prompts []string, skip []int, variati
 						var u string
 						u, err := upscale(cli, ctx, variationPreview, j)
 						if err != nil {
-							out <- &GenerateInfo{
-								Status: Fail,
-								Err:    err,
-							}
+							log.Println(fmt.Errorf("❌ couldn't upscale %s %d: %w", e.prompt, j, err))
 							continue
 						}
-						last := last && j == len(variationPreview.ImageIDs)-1
-						status := Process
-						if last {
-							status = Complete
-						}
-						out <- &GenerateInfo{
-							Image: &Image{
-								URL:         u,
-								Prompt:      e.prompt,
-								PromptIndex: e.index,
-								ImageIndex:  4 + i*4 + j,
-								IsLast:      last,
-							},
-							Status: status,
+						out <- &Image{
+							URL:         u,
+							Prompt:      e.prompt,
+							PromptIndex: e.index,
+							ImageIndex:  4 + i*4 + j,
+							IsLast:      i == len(preview.ImageIDs)-1 && j == len(variationPreview.ImageIDs)-1,
 						}
 					}
 				}
 			}
 		}()
 	}
-
 	go func() {
 		wg.Wait()
 		close(out)
 	}()
-
+	return out
 }
 
 func (i *Image) FileName() string {
 	prompt := fixString(i.Prompt)
-	ext := filepath.Ext(i.URL)
+	ext := filepath.Ext(strings.Split(i.URL, "?")[0])
 	return fmt.Sprintf("%s_%05d_%02d%s", prompt, i.PromptIndex, i.ImageIndex, ext)
 }
 
 func (i *Image) FileNames() []string {
 	var names []string
 	prompt := fixString(i.Prompt)
-	ext := filepath.Ext(i.URL)
+	ext := filepath.Ext(strings.Split(i.URL, "?")[0])
 	for j := 0; j < 4; j++ {
 		names = append(names, fmt.Sprintf("%s_%05d_%02d%s", prompt, i.PromptIndex, i.ImageIndex+j, ext))
 	}
@@ -325,7 +274,7 @@ func upscale(cli Client, ctx context.Context, preview *Preview, index int) (stri
 		if err != nil {
 			return err
 		}
-		upscaleURL = u
+		upscaleURL = u[0]
 		return nil
 	}); err != nil {
 		return "", err
@@ -348,7 +297,7 @@ func variation(cli Client, ctx context.Context, preview *Preview, index int) (*P
 	return variationPreview, nil
 }
 
-const maxAttempts = 1
+const maxAttempts = 5
 
 func retry(ctx context.Context, fn func(context.Context) error) error {
 	attempts := 0
@@ -357,8 +306,13 @@ func retry(ctx context.Context, fn func(context.Context) error) error {
 		if err == nil {
 			return nil
 		}
-		// If the error is not temporary, return it
 		var aiErr Error
+		// If the error is fatal, stop everything
+		if errors.As(err, &aiErr) && aiErr.Fatal() {
+			// TODO: handle fatal errors
+			panic(err)
+		}
+		// If the error is not temporary, return it
 		if errors.As(err, &aiErr) && !aiErr.Temporary() {
 			return err
 		}
@@ -366,6 +320,16 @@ func retry(ctx context.Context, fn func(context.Context) error) error {
 		if attempts >= maxAttempts {
 			return err
 		}
-		log.Println("retrying...", err)
+		// If the error is not a context deadline exceeded, wait before retrying
+		if !errors.Is(err, context.DeadlineExceeded) {
+			log.Println("waiting and retrying...", err)
+			select {
+			case <-time.After(10 * time.Minute):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		} else {
+			log.Println("retrying...", err)
+		}
 	}
 }

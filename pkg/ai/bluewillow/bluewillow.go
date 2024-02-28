@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/ZYKJShadow/bulkai/pkg/ai"
+	"github.com/ZYKJShadow/bulkai/pkg/discord"
 	"log"
 	"math/rand"
 	"regexp"
@@ -11,8 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ZYKJShadow/bulkai/pkg/ai"
-	"github.com/ZYKJShadow/bulkai/pkg/discord"
 	"github.com/bwmarrin/discordgo"
 	"github.com/bwmarrin/snowflake"
 )
@@ -35,14 +35,22 @@ type Client struct {
 	channelID string
 	guildID   string
 	cmd       *discordgo.ApplicationCommand
+	timeout   time.Duration
 }
 
-func New(client *discord.Client, channelID string, guildID string, debug bool) (ai.Client, error) {
+type Config struct {
+	Debug     bool
+	ChannelID string
+	Timeout   time.Duration
+}
+
+func New(client *discord.Client, cfg *Config) (ai.Client, error) {
 	node, err := snowflake.NewNode(0)
 	if err != nil {
 		return nil, fmt.Errorf("bluewillow: couldn't create snowflake node")
 	}
 
+	channelID := cfg.ChannelID
 	if channelID == "" {
 		channelID = client.DM(botID)
 		if channelID == "" {
@@ -50,25 +58,30 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 		}
 	}
 
-	//guildID := ""
-	//if split := strings.SplitN(channelID, "/", 2); len(split) == 2 {
-	//	guildID = split[0]
-	//	channelID = split[1]
-	//}
-	//if guildID != "" {
-	//	client.Referer = fmt.Sprintf("channels/%s/%s", guildID, channelID)
-	//} else {
-	//	client.Referer = fmt.Sprintf("channels/@me/%s", channelID)
-	//}
+	guildID := ""
+	if split := strings.SplitN(channelID, "/", 2); len(split) == 2 {
+		guildID = split[0]
+		channelID = split[1]
+	}
+	if guildID != "" {
+		client.Referer = fmt.Sprintf("channels/%s/%s", guildID, channelID)
+	} else {
+		client.Referer = fmt.Sprintf("channels/@me/%s", channelID)
+	}
 
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = 10 * time.Minute
+	}
 	c := &Client{
 		c:         client,
-		debug:     debug,
+		debug:     cfg.Debug,
 		node:      node,
 		callback:  make(map[search][]func(*discord.Message) bool),
 		cache:     make(map[string]struct{}),
 		channelID: channelID,
 		guildID:   guildID,
+		timeout:   timeout,
 	}
 
 	c.c.OnEvent(func(e *discordgo.Event) {
@@ -77,6 +90,10 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 			var msg discord.Message
 			if err := json.Unmarshal(e.RawData, &msg); err != nil {
 				log.Println("bluewillow: couldn't unmarshal message: %w", err)
+			}
+			// Ignore messages from other channels
+			if msg.ChannelID != c.channelID {
+				return
 			}
 			c.debugLog(e.Type, e.RawData)
 
@@ -91,7 +108,7 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				}
 
 				// Attachment based message
-				cacheID = msg.Attachments[0].URL
+				cacheID = cleanURL(msg.Attachments[0].URL)
 
 				// Ignore message already in the cache
 				c.lck.Lock()
@@ -171,7 +188,6 @@ func New(client *discord.Client, channelID string, guildID string, debug bool) (
 				return
 			}
 		}
-		return
 	})
 	return c, nil
 }
@@ -188,7 +204,7 @@ func (c *Client) debugLog(t string, v interface{}) {
 		log.Println(t)
 		return
 	}
-	js, _ := json.MarshalIndent(v, "", "  ")
+	js, _ := json.Marshal(v)
 	log.Println(t, string(js))
 }
 
@@ -231,7 +247,7 @@ func (s nonceSearch) value() string {
 	return string(s)
 }
 
-func (c *Client) receiveMessage(parent context.Context, key search, fn func() error) (*discord.Message, error) {
+func (c *Client) receiveMessage(parent context.Context, key search, timeout time.Duration, fn func() error) (*discord.Message, error) {
 	msgChan := make(chan *discord.Message)
 	defer close(msgChan)
 	c.lck.Lock()
@@ -256,7 +272,7 @@ func (c *Client) receiveMessage(parent context.Context, key search, fn func() er
 	}
 
 	// Add a timeout to receive the message
-	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	select {
@@ -358,7 +374,7 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 	// so we have to remove the links from the prompt
 	responsePrompt := toResponsePrompt(prompt)
 
-	preview, err := c.receiveMessage(ctx, previewSearch(responsePrompt), func() error {
+	preview, err := c.receiveMessage(ctx, previewSearch(responsePrompt), c.timeout, func() error {
 		// Launch interaction inside the receive message process because the
 		// response may be received before it finishes, due to rate limit
 		// locking.
@@ -398,9 +414,9 @@ func (c *Client) Imagine(ctx context.Context, prompt string) (*ai.Preview, error
 	}, nil
 }
 
-func (c *Client) Upscale(ctx context.Context, preview *ai.Preview, index int) (string, error) {
+func (c *Client) Upscale(ctx context.Context, preview *ai.Preview, index int) ([]string, error) {
 	if index < 0 || index >= len(preview.ImageIDs) {
-		return "", fmt.Errorf("bluewillow: invalid index %d", index)
+		return nil, fmt.Errorf("bluewillow: invalid index %d", index)
 	}
 	customID := fmt.Sprintf("%s%s", upscaleID, preview.ImageIDs[index])
 	nonce := c.node.Generate().String()
@@ -419,7 +435,7 @@ func (c *Client) Upscale(ctx context.Context, preview *ai.Preview, index int) (s
 	}
 	c.debugLog("UPSCALE", upscale)
 
-	msg, err := c.receiveMessage(ctx, upscaleSearch(preview.ResponsePrompt), func() error {
+	msg, err := c.receiveMessage(ctx, upscaleSearch(preview.ResponsePrompt), c.timeout, func() error {
 		// Launch interaction inside the receive message process because the
 		// response may be received before it finishes, due to rate limit
 		// locking.
@@ -429,9 +445,9 @@ func (c *Client) Upscale(ctx context.Context, preview *ai.Preview, index int) (s
 		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("bluewillow: couldn't receive links message: %w", err)
+		return nil, fmt.Errorf("bluewillow: couldn't receive links message: %w", err)
 	}
-	return msg.Attachments[0].URL, nil
+	return []string{msg.Attachments[0].URL}, nil
 }
 
 func (c *Client) Variation(ctx context.Context, preview *ai.Preview, index int) (*ai.Preview, error) {
@@ -455,7 +471,7 @@ func (c *Client) Variation(ctx context.Context, preview *ai.Preview, index int) 
 	}
 	c.debugLog("VARIATION", variation)
 
-	msg, err := c.receiveMessage(ctx, variationSearch(preview.ResponsePrompt), func() error {
+	msg, err := c.receiveMessage(ctx, variationSearch(preview.ResponsePrompt), c.timeout, func() error {
 		// Launch interaction inside the receive message process because the
 		// response may be received before it finishes, due to rate limit
 		// locking.
@@ -505,4 +521,8 @@ var linkWrappedRegex = regexp.MustCompile(`<https?://[^\s]+>`)
 
 func fromResponsePrompt(s string) string {
 	return linkWrappedRegex.ReplaceAllString(s, "<LINK>")
+}
+
+func cleanURL(u string) string {
+	return strings.Split(u, "?")[0]
 }

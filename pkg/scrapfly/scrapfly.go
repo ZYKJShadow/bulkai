@@ -3,8 +3,12 @@ package scrapfly
 const (
 	// JA3URL is the URL to the JA3 API
 	FPJA3URL = "https://tools.scrapfly.io/api/fp/ja3"
-	// HTTPURL is the URL to the HTTP API
-	InfoHTTPURL = "https://tools.scrapfly.io/api/info/http"
+	// JA3WebURL is the URL to the web JA3 tool
+	FPJA3WebURL = "https://scrapfly.io/web-scraping-tools/ja3-fingerprint"
+	// FPAkamaiURL is the URL to the HTTP2 API
+	FPAkamaiURL = "https://tools.scrapfly.io/api/fp/akamai"
+	// FPHTTP2WebURL is the URL to the web HTTP2 tool
+	FPHTTP2WebURL = "https://scrapfly.io/web-scraping-tools/http2-fingerprint"
 )
 
 type FPJA3 struct {
@@ -12,16 +16,6 @@ type FPJA3 struct {
 	Digest string `json:"digest"`
 }
 
-type InfoHTTP struct {
-	Headers Headers `json:"headers"`
-}
-
-type Headers struct {
-	UserAgent     UserAgent           `json:"user_agent"`
-	RawHeaders    []string            `json:"raw_headers"`
-	ParsedHeaders map[string][]string `json:"parsed_headers"`
-}
-
-type UserAgent struct {
-	Payload string `json:"payload"`
+type InfoHTTP2 struct {
+	Headers map[string][]string `json:"headers"`
 }
