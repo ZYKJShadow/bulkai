@@ -38,24 +38,26 @@ type Image struct {
 }
 
 type Config struct {
-	Debug       bool          `yaml:"debug"`
-	Bot         string        `yaml:"bot"`
-	Proxy       string        `yaml:"proxy"`
-	Output      string        `yaml:"output"`
-	Album       string        `yaml:"album"`
-	Prefix      string        `yaml:"prefix"`
-	Suffix      string        `yaml:"suffix"`
-	Prompts     []string      `yaml:"prompts"`
-	Variation   bool          `yaml:"variation"`
-	Upscale     bool          `yaml:"upscale"`
-	Download    bool          `yaml:"download"`
-	Thumbnail   bool          `yaml:"thumbnail"`
-	Channel     string        `yaml:"channel"`
-	GuildID     string        `yaml:"groupID"`
-	Concurrency int           `yaml:"concurrency"`
-	Wait        time.Duration `yaml:"wait"`
-	SessionFile string        `yaml:"session"`
-	Session     Session       `yaml:"-"`
+	Debug          bool          `yaml:"debug"`
+	Bot            string        `yaml:"bot"`
+	Proxy          string        `yaml:"proxy"`
+	Output         string        `yaml:"output"`
+	Album          string        `yaml:"album"`
+	Prefix         string        `yaml:"prefix"`
+	Suffix         string        `yaml:"suffix"`
+	Prompts        []string      `yaml:"prompts"`
+	Variation      bool          `yaml:"variation"`
+	Upscale        bool          `yaml:"upscale"`
+	Download       bool          `yaml:"download"`
+	Thumbnail      bool          `yaml:"thumbnail"`
+	Channel        string        `yaml:"channel"`
+	GuildID        string        `yaml:"groupID"`
+	Concurrency    int           `yaml:"concurrency"`
+	Wait           time.Duration `yaml:"wait"`
+	SessionFile    string        `yaml:"session"`
+	Session        Session       `yaml:"-"`
+	ReplicateToken string        `yaml:"replicate-token"`
+	MidjourneyCDN  bool          `yaml:"midjourney-cdn"`
 }
 
 type Session struct {
@@ -136,13 +138,25 @@ func NewCli(ctx context.Context, cfg *Config) (drawClient *AiDrawClient, err err
 		return
 	}
 
-	var newCli func(*discord.Client, string, string, bool) (ai.Client, error)
+	var newCli func(*discord.Client, string, bool) (ai.Client, error)
 
 	switch strings.ToLower(cfg.Bot) {
 	case "bluewillow":
-		newCli = bluewillow.New
+		newCli = func(c *discord.Client, channelID string, debug bool) (ai.Client, error) {
+			return bluewillow.New(c, &bluewillow.Config{
+				ChannelID: channelID,
+				Debug:     debug,
+			})
+		}
 	case "midjourney":
-		newCli = midjourney.New
+		newCli = func(c *discord.Client, channelID string, debug bool) (ai.Client, error) {
+			return midjourney.New(c, &midjourney.Config{
+				ChannelID:      channelID,
+				Debug:          debug,
+				ReplicateToken: cfg.ReplicateToken,
+				MidjourneyCDN:  cfg.MidjourneyCDN,
+			})
+		}
 	default:
 		return nil, fmt.Errorf("unsupported bot: %s", cfg.Bot)
 	}
@@ -200,7 +214,7 @@ func NewCli(ctx context.Context, cfg *Config) (drawClient *AiDrawClient, err err
 		return nil, fmt.Errorf("couldn't start discord client: %w", err)
 	}
 
-	cli, err := newCli(client, cfg.Channel, cfg.GuildID, cfg.Debug)
+	cli, err := newCli(client, cfg.Channel, cfg.Debug)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't create %s client: %w", cfg.Bot, err)
 	}
@@ -278,7 +292,7 @@ func (a *AiDrawClient) Generate(ctx context.Context, prompts []string, variation
 	}
 
 	ai.Bulk(ctx, a.AiCli, prompts, album.Finished, variation, upscale, a.cfg.Concurrency, container.InfoChan, a.cfg.Wait)
-	
+
 	log.Printf("album %s %s\n", albumDir, album.Status)
 	return nil
 }
