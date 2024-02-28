@@ -53,6 +53,7 @@ type Client struct {
 type Config struct {
 	Debug          bool
 	ChannelID      string
+	GuildID        string
 	ReplicateToken string
 	Timeout        time.Duration
 	QueuedTimeout  time.Duration
@@ -73,11 +74,7 @@ func New(client *discord.Client, cfg *Config) (ai.Client, error) {
 		}
 	}
 
-	guildID := ""
-	if split := strings.SplitN(channelID, "/", 2); len(split) == 2 {
-		guildID = split[0]
-		channelID = split[1]
-	}
+	guildID := cfg.GuildID
 	if guildID != "" {
 		client.Referer = fmt.Sprintf("channels/%s/%s", guildID, channelID)
 	} else {

@@ -154,6 +154,7 @@ func NewCli(ctx context.Context, cfg *Config) (drawClient *AiDrawClient, err err
 				ChannelID:      channelID,
 				Debug:          debug,
 				ReplicateToken: cfg.ReplicateToken,
+				GuildID:        cfg.GuildID,
 				MidjourneyCDN:  cfg.MidjourneyCDN,
 			})
 		}
