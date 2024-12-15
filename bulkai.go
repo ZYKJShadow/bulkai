@@ -190,8 +190,11 @@ func NewCli(ctx context.Context, cfg *Config) (drawClient *AiDrawClient, err err
 		if err != nil {
 			log.Println(fmt.Errorf("couldn't marshal session: %w", err))
 		}
-		if err := os.WriteFile(cfg.SessionFile, data, 0644); err != nil {
-			log.Println(fmt.Errorf("couldn't write session: %w", err))
+
+		if cfg.SessionFile != "" {
+			if err = os.WriteFile(cfg.SessionFile, data, 0644); err != nil {
+				log.Println(fmt.Errorf("couldn't write session: %w", err))
+			}
 		}
 	}()
 
