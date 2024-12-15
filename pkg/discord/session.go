@@ -17,19 +17,24 @@ func newSession(dialer func(ctx context.Context, network, addr string) (net.Conn
 	if err != nil {
 		return nil, err
 	}
-	u, err := url.Parse(proxy)
-	if err != nil {
-		return nil, err
+
+	s.Dialer = &websocket.Dialer{}
+	if proxy != "" {
+		u, err := url.Parse(proxy)
+		if err != nil {
+			return nil, err
+		}
+		s.Dialer.Proxy = http.ProxyURL(u)
 	}
-	s.Dialer = &websocket.Dialer{
-		Proxy: http.ProxyURL(u),
-	}
+
 	if dialer != nil {
 		s.Dialer.NetDialContext = dialer
 	}
+
 	s.Client = &http.Client{
 		Transport: &roundTripper{},
 	}
+
 	s.UserAgent = userAgent
 	return s, nil
 }
